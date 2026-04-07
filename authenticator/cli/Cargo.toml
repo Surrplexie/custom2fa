@@ -1,0 +1,4 @@
+[dependencies]
+core = { path = "../core" }
+base32 = "0.4"
+clap = { version = "4.0", features = ["derive"] }

@@ -1,2 +1,21 @@
-# custom2fa
-A custom built 2FA authenticator app using the main features like Google or Apple but for local hosting/offline if plausible, should work if development continues, this is mainly for development, and research purposes only, this is not mean't for full use unless stated later on. I assume no responsibility for those that continue development or wish to fully use this app. This apps intended support is for Windows 11, Ubuntu Linux, iOS, and Android OS though rust core, and subsidiary coding languages if/when applicable.
+# Rust Authenticator 🔐
+
+A secure, cross-platform 2FA authenticator built in Rust.
+
+## Features
+- TOTP (RFC 6238 compliant)
+- Offline code generation
+- Modular architecture (CLI, desktop, mobile)
+
+## Roadmap
+- [x] Core TOTP engine
+- [x] CLI interface
+- [ ] Encrypted storage (AES-256-GCM)
+- [ ] QR code parsing
+- [ ] Desktop app (Tauri)
+- [ ] Mobile apps (iOS + Android)
+
+## Security Goals
+- No plaintext secrets
+- Memory-safe Rust implementation
+- Hardware-backed key storage (future)
