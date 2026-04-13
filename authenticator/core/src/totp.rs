@@ -1,3 +1,13 @@
+use crate::error::AuthError;
+// Add this import to the top of src/totp.rs
+use base32::{decode, Alphabet};
+
+/// Converts a Base32 string (from Google/Amazon) into raw bytes.
+pub fn decode_secret(base32_secret: &str) -> Result<Vec<u8>, AuthError> {
+    // RFC4648 is the standard for TOTP secrets
+    decode(Alphabet::RFC4648 { padding: false }, &base32_secret.to_uppercase())
+        .ok_or(AuthError::InvalidSecret)
+}
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
 use time::OffsetDateTime;
@@ -19,6 +29,7 @@ pub fn generate_totp(secret: &[u8], timestep: u64, digits: u32) -> u32 {
 
     code % 10_u32.pow(digits)
 }
+
 
 pub fn current_timestep() -> u64 {
     let now = OffsetDateTime::now_utc().unix_timestamp();

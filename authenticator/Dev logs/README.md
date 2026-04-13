@@ -8,3 +8,5 @@
 - Updating dependencies
 - Developing encryption 
 - Adding accounts
+
+11 April 2026 - 0.0.3 - Update and Patches

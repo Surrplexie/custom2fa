@@ -14,3 +14,12 @@ pub fn load_accounts(path: &Path) -> Vec<Account> {
     let data = fs::read_to_string(path).unwrap();
     serde_json::from_str(&data).unwrap()
 }
+
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize, Debug, Clone)] // Added derives
+pub struct Account {
+    pub issuer: String,
+    pub label: String,
+    pub secret: Vec<u8>,
+}
