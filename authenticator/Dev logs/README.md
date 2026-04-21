@@ -15,3 +15,11 @@
 - Added `otp_uri` parsing module and offline QR decoding path (`image` + `rqrr`) for standard TOTP provisioning URIs.
 - Hardened sensitive paths with `zeroize` for derived keys, passphrase byte copies, and backup plaintext handling where applicable.
 - Added unit tests for encrypt/decrypt roundtrip, wrong-passphrase failure, and basic OTP URI parsing.
+
+21 April 2026 - 0.0.4 - Update and Patches
+- Added a desktop GUI hub (`custom2fa_desktop`) for offline account management without requiring CLI commands.
+- Implemented hidden passphrase prompt flow in CLI with optional argument fallback for automation.
+- Added account management UX in desktop app: search, select, edit, and delete stored accounts.
+- Integrated OS keychain support to save/load/clear the database passphrase securely from the GUI.
+- Added camera-based QR scan import (single-frame capture) alongside existing QR image file import.
+- Updated workspace/build configuration and docs so core, CLI, and desktop apps compile and run together.
