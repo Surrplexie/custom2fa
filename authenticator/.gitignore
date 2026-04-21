@@ -1,10 +1,2 @@
+# Rust build output (also covered by repo-root `.gitignore`).
 /target/
-
-# local secrets / databases
-*.c2fa
-**/accounts.c2fa
-# backups
-*backup*.json
-# screenshots / proof assets if you don't want them public
-**/Screenshots/**
-authenticator/docs/images/**

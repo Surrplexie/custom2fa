@@ -1,0 +1,47 @@
+# --- Rust / Cargo ---
+**/target/
+**/*.rs.bk
+
+# --- Local-only data (recommended layout) ---
+# Put your real `accounts.c2fa`, exports, scratch files under `local/` while developing.
+/local/
+**/local/
+
+# --- Encrypted app database files (never commit real vaults) ---
+*.c2fa
+
+# --- Typical local backup exports ---
+# Prefer storing exports under `/local/` (ignored above).
+# These are common default names from the GUI; widen only if you need to.
+**/backup-2fa.json
+
+# --- Secrets / environment files ---
+.env
+.env.*
+!.env.example
+
+# --- Keys / certs (private material) ---
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+id_rsa
+id_ed25519
+*.ppk
+
+# --- OS / editor noise ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.lnk
+
+# --- Logs / temp ---
+*.log
+*.tmp
+*.temp
+*~
+
+# --- JetBrains ---
+.idea/
