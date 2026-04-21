@@ -1,25 +1,23 @@
-use create::account::Account;
-use st::fs;
+use crate::account::Account;
+use crate::crypto::{decrypt, encrypt};
+use crate::error::AuthError;
+use std::fs;
 use std::path::Path;
 
-pub fn save_accounts(path: &Path, accounts: &[Account]) {
-    let data = serde_json::to_string(accounts).unwrap();
-    fs::write(path, data).unwrap();
+pub fn save_accounts(path: &Path, accounts: &[Account], passphrase: &str) -> Result<(), AuthError> {
+    let data = serde_json::to_vec(accounts)?;
+    let encrypted = encrypt(&data, passphrase)?;
+    fs::write(path, encrypted)?;
+    Ok(())
 }
 
-pub fn load_accounts(path: &Path) -> Vec<Account> {
+pub fn load_accounts(path: &Path, passphrase: &str) -> Result<Vec<Account>, AuthError> {
     if !path.exists() {
-        return vec![];
+        return Ok(vec![]);
     }
-    let data = fs::read_to_string(path).unwrap();
-    serde_json::from_str(&data).unwrap()
-}
 
-use serde::{Serialize, Deserialize};
-
-#[derive(Serialize, Deserialize, Debug, Clone)] // Added derives
-pub struct Account {
-    pub issuer: String,
-    pub label: String,
-    pub secret: Vec<u8>,
+    let encrypted = fs::read(path)?;
+    let decrypted = decrypt(&encrypted, passphrase)?;
+    let accounts: Vec<Account> = serde_json::from_slice(&decrypted)?;
+    Ok(accounts)
 }

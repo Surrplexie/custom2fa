@@ -1,10 +1,8 @@
 use crate::error::AuthError;
-// Add this import to the top of src/totp.rs
 use base32::{decode, Alphabet};
 
 /// Converts a Base32 string (from Google/Amazon) into raw bytes.
 pub fn decode_secret(base32_secret: &str) -> Result<Vec<u8>, AuthError> {
-    // RFC4648 is the standard for TOTP secrets
     decode(Alphabet::RFC4648 { padding: false }, &base32_secret.to_uppercase())
         .ok_or(AuthError::InvalidSecret)
 }

@@ -10,7 +10,7 @@ A secure, cross-platform 2FA authenticator built in Rust.
 ## Roadmap
 - [x] Core TOTP engine
 - [x] CLI interface
-- [ ] Encrypted storage (AES-256-GCM)
+- [x] Encrypted storage (AES-256-GCM + PBKDF2)
 - [ ] QR code parsing
 - [ ] Desktop app (Tauri)
 - [ ] Mobile apps (iOS + Android)

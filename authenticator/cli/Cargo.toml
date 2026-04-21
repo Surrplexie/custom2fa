@@ -1,4 +1,8 @@
+[package]
+name = "custom2fa_cli"
+version = "0.1.0"
+edition = "2021"
+
 [dependencies]
-core = { path = "../core" }
-base32 = "0.4"
+custom2fa_core = { path = "../core" }
 clap = { version = "4.0", features = ["derive"] }
