@@ -14,10 +14,15 @@ Implementation overview: **[authenticator/README.md](authenticator/README.md)**.
 ## Working status (screenshots)
 
 ![img (1)](authenticator/docs/images/img%20(1).png)
+
 ![img (2)](authenticator/docs/images/img%20(2).png)
+
 ![img (3)](authenticator/docs/images/img%20(3).png)
+
 ![img (4)](authenticator/docs/images/img%20(4).png)
+
 ![img (5)](authenticator/docs/images/img%20(5).png)
+
 ![img (6)](authenticator/docs/images/img%20(6).png)
 
 ## Disclaimer
