@@ -43,6 +43,10 @@ struct Custom2faApp {
 }
 
 impl Custom2faApp {
+    fn clean_path_input(raw: &str) -> String {
+        raw.trim().trim_matches('"').trim().to_string()
+    }
+
     fn ensure_defaults(&mut self) {
         if self.db_path.is_empty() {
             self.db_path = "accounts.c2fa".to_string();
@@ -135,7 +139,17 @@ impl Custom2faApp {
         if self.qr_image_path.is_empty() {
             return Err("QR image path is required.".to_string());
         }
-        let account = parse_otpauth_uri_from_qr_image(&PathBuf::from(self.qr_image_path.clone()))
+
+        let cleaned = Self::clean_path_input(&self.qr_image_path);
+        if cleaned.is_empty() {
+            return Err("QR image path is required.".to_string());
+        }
+        let path = PathBuf::from(cleaned.clone());
+        if !path.exists() {
+            return Err(format!("QR image file was not found: {cleaned}"));
+        }
+
+        let account = parse_otpauth_uri_from_qr_image(&path)
             .map_err(|e| e.to_string())?;
         self.reload_accounts()?;
         if self.accounts.iter().any(|a| a.label == account.label) {
@@ -371,6 +385,7 @@ impl eframe::App for Custom2faApp {
             if ui.button("Import QR Image").clicked() {
                 self.run_action(|s| s.import_qr());
             }
+            ui.label("Tip: paste path without quotes, or quotes are auto-trimmed.");
             ui.horizontal(|ui| {
                 ui.label("Camera index");
                 ui.text_edit_singleline(&mut self.camera_index);
