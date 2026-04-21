@@ -1,6 +1,7 @@
 use crate::account::Account;
 use crate::error::AuthError;
 use crate::totp::decode_secret;
+use image::GrayImage;
 use image::ImageReader;
 use rqrr::PreparedImage;
 use std::path::Path;
@@ -51,6 +52,10 @@ pub fn parse_otpauth_uri(uri: &str) -> Result<Account, AuthError> {
 
 pub fn parse_otpauth_uri_from_qr_image(path: &Path) -> Result<Account, AuthError> {
     let image = ImageReader::open(path)?.decode()?.to_luma8();
+    parse_otpauth_uri_from_luma(image)
+}
+
+pub fn parse_otpauth_uri_from_luma(image: GrayImage) -> Result<Account, AuthError> {
     let mut prepared = PreparedImage::prepare(image);
     let grids = prepared.detect_grids();
 

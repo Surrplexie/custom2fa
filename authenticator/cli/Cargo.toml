@@ -7,3 +7,4 @@ edition = "2021"
 custom2fa_core = { path = "../core" }
 clap = { version = "4.0", features = ["derive"] }
 zeroize = "1.8"
+rpassword = "7.3"

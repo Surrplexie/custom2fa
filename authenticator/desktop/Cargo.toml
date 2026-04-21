@@ -1,0 +1,12 @@
+[package]
+name = "custom2fa_desktop"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+custom2fa_core = { path = "../core" }
+eframe = "0.33"
+egui = "0.33"
+keyring = "3.6"
+nokhwa = { version = "0.10", features = ["input-native"] }
+image = "0.25"

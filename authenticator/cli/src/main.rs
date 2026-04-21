@@ -4,6 +4,7 @@ use custom2fa_core::account::Account;
 use custom2fa_core::otp_uri::{parse_otpauth_uri, parse_otpauth_uri_from_qr_image};
 use custom2fa_core::storage::{export_backup, import_backup, load_accounts, save_accounts};
 use custom2fa_core::totp::{current_timestep, decode_secret, generate_totp};
+use rpassword::prompt_password;
 use std::path::PathBuf;
 use zeroize::Zeroize;
 
@@ -15,7 +16,7 @@ struct Args {
     db: PathBuf,
 
     #[arg(short, long)]
-    passphrase: String,
+    passphrase: Option<String>,
 
     #[command(subcommand)]
     command: Command,
@@ -48,18 +49,25 @@ enum Command {
         #[arg(long)]
         backup: PathBuf,
         #[arg(long)]
-        backup_passphrase: String,
+        backup_passphrase: Option<String>,
     },
     ImportBackup {
         #[arg(long)]
         backup: PathBuf,
         #[arg(long)]
-        backup_passphrase: String,
+        backup_passphrase: Option<String>,
     },
 }
 
 fn main() {
     let mut args = Args::parse();
+    let mut passphrase = match resolve_passphrase(args.passphrase.take(), "Database passphrase: ") {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
 
     match args.command {
         Command::Add {
@@ -75,7 +83,7 @@ fn main() {
                 }
             };
 
-            let mut accounts = match load_accounts(&args.db, &args.passphrase) {
+            let mut accounts = match load_accounts(&args.db, &passphrase) {
                 Ok(a) => a,
                 Err(e) => {
                     eprintln!("Failed to load account database: {e}");
@@ -94,14 +102,14 @@ fn main() {
                 secret: secret_bytes,
             });
 
-            if let Err(e) = save_accounts(&args.db, &accounts, &args.passphrase) {
+            if let Err(e) = save_accounts(&args.db, &accounts, &passphrase) {
                 eprintln!("Failed to save account database: {e}");
                 std::process::exit(1);
             }
             println!("Account added successfully.");
         }
         Command::List => {
-            let accounts = match load_accounts(&args.db, &args.passphrase) {
+            let accounts = match load_accounts(&args.db, &passphrase) {
                 Ok(a) => a,
                 Err(e) => {
                     eprintln!("Failed to load account database: {e}");
@@ -119,7 +127,7 @@ fn main() {
             }
         }
         Command::Code { label } => {
-            let accounts = match load_accounts(&args.db, &args.passphrase) {
+            let accounts = match load_accounts(&args.db, &passphrase) {
                 Ok(a) => a,
                 Err(e) => {
                     eprintln!("Failed to load account database: {e}");
@@ -145,7 +153,7 @@ fn main() {
                 }
             };
 
-            let mut accounts = match load_accounts(&args.db, &args.passphrase) {
+            let mut accounts = match load_accounts(&args.db, &passphrase) {
                 Ok(a) => a,
                 Err(e) => {
                     eprintln!("Failed to load account database: {e}");
@@ -159,7 +167,7 @@ fn main() {
             }
 
             accounts.push(account);
-            if let Err(e) = save_accounts(&args.db, &accounts, &args.passphrase) {
+            if let Err(e) = save_accounts(&args.db, &accounts, &passphrase) {
                 eprintln!("Failed to save account database: {e}");
                 std::process::exit(1);
             }
@@ -174,7 +182,7 @@ fn main() {
                 }
             };
 
-            let mut accounts = match load_accounts(&args.db, &args.passphrase) {
+            let mut accounts = match load_accounts(&args.db, &passphrase) {
                 Ok(a) => a,
                 Err(e) => {
                     eprintln!("Failed to load account database: {e}");
@@ -188,7 +196,7 @@ fn main() {
             }
 
             accounts.push(account);
-            if let Err(e) = save_accounts(&args.db, &accounts, &args.passphrase) {
+            if let Err(e) = save_accounts(&args.db, &accounts, &passphrase) {
                 eprintln!("Failed to save account database: {e}");
                 std::process::exit(1);
             }
@@ -198,25 +206,73 @@ fn main() {
             backup,
             mut backup_passphrase,
         } => {
-            if let Err(e) = export_backup(&args.db, &backup, &args.passphrase, &backup_passphrase) {
+            let backup_secret = resolve_passphrase(
+                backup_passphrase.take(),
+                "Backup passphrase: ",
+            );
+            let mut backup_secret = match backup_secret {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            };
+
+            if let Err(e) = export_backup(&args.db, &backup, &passphrase, &backup_secret) {
                 eprintln!("Failed to export backup: {e}");
                 std::process::exit(1);
             }
-            backup_passphrase.zeroize();
+            backup_secret.zeroize();
             println!("Backup exported successfully.");
         }
         Command::ImportBackup {
             backup,
             mut backup_passphrase,
         } => {
-            if let Err(e) = import_backup(&backup, &args.db, &backup_passphrase, &args.passphrase) {
+            let backup_secret = resolve_passphrase(
+                backup_passphrase.take(),
+                "Backup passphrase: ",
+            );
+            let mut backup_secret = match backup_secret {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            };
+
+            if let Err(e) = import_backup(&backup, &args.db, &backup_secret, &passphrase) {
                 eprintln!("Failed to import backup: {e}");
                 std::process::exit(1);
             }
-            backup_passphrase.zeroize();
+            backup_secret.zeroize();
             println!("Backup imported and re-encrypted for local database.");
         }
     }
 
-    args.passphrase.zeroize();
+    passphrase.zeroize();
+}
+
+fn resolve_passphrase(
+    cli_value: Option<String>,
+    prompt: &str,
+) -> Result<String, &'static str> {
+    match cli_value {
+        Some(value) => {
+            if value.is_empty() {
+                Err("Passphrase cannot be empty.")
+            } else {
+                Ok(value)
+            }
+        }
+        None => {
+            let value =
+                prompt_password(prompt).map_err(|_| "Failed to read passphrase from terminal.")?;
+            if value.is_empty() {
+                Err("Passphrase cannot be empty.")
+            } else {
+                Ok(value)
+            }
+        }
+    }
 }
