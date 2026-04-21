@@ -19,3 +19,5 @@ From `authenticator/`:
 - Search, edit, and delete accounts
 - Save/load DB passphrase to OS keychain
 - Export/import encrypted backups
+
+Full usage, paths, and troubleshooting: [`../docs/USER_GUIDE.md`](../docs/USER_GUIDE.md).

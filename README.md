@@ -1,11 +1,25 @@
 # custom2fa
 
-A custom built 2FA authenticator app using the main features like Google or Apple but for local hosting/offline if plausible, should work if development continues, this is mainly for development, and research purposes only, this is not mean't for full use unless stated later on. I assume no responsibility for those that continue development or wish to fully use this app with or any security vulnerabilities at anytime of creation. This apps intended support is for Windows 11, Ubuntu Linux, iOS, and Android OS though rust core, and subsidiary coding languages if/when applicable.
+Offline-first TOTP (“authenticator app”) tooling built around a Rust **core** library, with a **CLI** and a **desktop hub** for day-to-day use. This repository is maintained for **development and research**; use at your own risk and review the security notes before relying on it for real accounts.
 
-Working status
-![img (1)](docs/images/img (1).png)
-![img (2)](docs/images/img (2).png)
-![img (3)](docs/images/img (3).png)
-![img (4)](docs/images/img (4).png)
-![img (5)](docs/images/img (5).png)
-![img (6)](docs/images/img (6).png)
+## Documentation (full detail)
+
+- **[User guide](authenticator/docs/USER_GUIDE.md)** — GUI + CLI usage, database/passphrase behavior, backups, troubleshooting  
+- **[Build and layout](authenticator/docs/BUILD_AND_LAYOUT.md)** — folder map, `cargo` commands, where `.exe` files are produced  
+- **[Public repo checklist](authenticator/docs/PUBLIC_REPO_CHECKLIST.md)** — what must never be committed on a public GitHub repo  
+- **[Docs index](authenticator/docs/README.md)** — table of contents for `authenticator/docs/`
+
+Implementation overview: **[authenticator/README.md](authenticator/README.md)**.
+
+## Working status (screenshots)
+
+![img (1)](authenticator/docs/images/img%20(1).png)
+![img (2)](authenticator/docs/images/img%20(2).png)
+![img (3)](authenticator/docs/images/img%20(3).png)
+![img (4)](authenticator/docs/images/img%20(4).png)
+![img (5)](authenticator/docs/images/img%20(5).png)
+![img (6)](authenticator/docs/images/img%20(6).png)
+
+## Disclaimer
+
+This project is not a commercial security product. The author assumes **no responsibility** for loss, account lockout, or security issues arising from use or continued development.
