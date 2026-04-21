@@ -6,6 +6,10 @@ A secure, cross-platform 2FA authenticator built in Rust.
 - TOTP (RFC 6238 compliant)
 - Offline code generation
 - Modular architecture (CLI, desktop, mobile)
+- Encrypted account database (AES-256-GCM + PBKDF2)
+- OTP URI import (`otpauth://...`)
+- QR image import (offline)
+- Encrypted backup export/import with re-encryption
 
 ## Roadmap
 - [x] Core TOTP engine
