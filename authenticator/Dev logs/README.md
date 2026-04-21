@@ -23,3 +23,10 @@
 - Integrated OS keychain support to save/load/clear the database passphrase securely from the GUI.
 - Added camera-based QR scan import (single-frame capture) alongside existing QR image file import.
 - Updated workspace/build configuration and docs so core, CLI, and desktop apps compile and run together.
+
+21 April 2026 - 0.0.5 - Update and Patches
+- Verified end-to-end real-world setup flow: account import, encrypted storage load, and live 6-digit TOTP generation in GUI.
+- Confirmed successful activation/use of authenticator-based 2FA in production-style account setup flow.
+- Improved QR import handling by normalizing pasted file paths (including accidental surrounding quotes) and adding clearer error feedback.
+- Validated desktop build outputs and launch process for `custom2fa_desktop.exe` with current workspace configuration.
+- Documented usage guidance for passphrase handling, code generation workflow, and offline recovery/backup expectations.
