@@ -432,6 +432,10 @@ impl eframe::App for Custom2faApp {
             }
             if !self.generated_code.is_empty() {
                 ui.label(format!("Current code: {}", self.generated_code));
+                if ui.button("Copy Code").clicked() {
+                    ui.ctx().copy_text(self.generated_code.clone());
+                    self.status = "Copied current code to clipboard.".to_string();
+                }
             }
 
             ui.separator();
