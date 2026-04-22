@@ -1,0 +1,2 @@
+# Rust build output (also covered by repo-root `.gitignore`).
+/target/
