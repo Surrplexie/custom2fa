@@ -430,12 +430,16 @@ impl eframe::App for Custom2faApp {
             if ui.button("Generate Current Code").clicked() {
                 self.run_action(|s| s.generate_current_code());
             }
-            if !self.generated_code.is_empty() {
-                ui.label(format!("Current code: {}", self.generated_code));
-                if ui.button("Copy Code").clicked() {
+            if ui.button("Copy Code").clicked() {
+                if self.generated_code.is_empty() {
+                    self.status = "No code to copy. Generate a code first.".to_string();
+                } else {
                     ui.ctx().copy_text(self.generated_code.clone());
                     self.status = "Copied current code to clipboard.".to_string();
                 }
+            }
+            if !self.generated_code.is_empty() {
+                ui.label(format!("Current code: {}", self.generated_code));
             }
 
             ui.separator();
