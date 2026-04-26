@@ -30,3 +30,6 @@
 - Improved QR import handling by normalizing pasted file paths (including accidental surrounding quotes) and adding clearer error feedback.
 - Validated desktop build outputs and launch process for `custom2fa_desktop.exe` with current workspace configuration.
 - Documented usage guidance for passphrase handling, code generation workflow, and offline recovery/backup expectations.
+
+26 April 2026 - 1.0.5 - Initial release
+- First release for personal use.
