@@ -1,4 +1,5 @@
 # --- Rust / Cargo ---
+**/target/
 **/*.rs.bk
 
 # --- Local-only data (recommended layout) ---

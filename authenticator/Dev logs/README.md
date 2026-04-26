@@ -31,5 +31,8 @@
 - Validated desktop build outputs and launch process for `custom2fa_desktop.exe` with current workspace configuration.
 - Documented usage guidance for passphrase handling, code generation workflow, and offline recovery/backup expectations.
 
-26 April 2026 - 1.0.5 - Initial release
-- First release for personal use.
+26 April 2026 - 0.1.0 - Release
+- Added a visible **Copy Code** action in the desktop hub that copies the current TOTP to the OS clipboard; documented empty-state behavior in the app status line.
+- Wrote a formal release runbook: `authenticator/docs/RELEASE.md` (test, `cargo build --release`, artifact paths, smoke test, optional git tag, GitHub release asset guidance).
+- Linked the release doc from the documentation index in `authenticator/docs/README.md`.
+- Confirmed `cargo check -p custom2fa_desktop` after copy-button layout fix so the shipping GUI build includes the control without requiring a prior code generation.

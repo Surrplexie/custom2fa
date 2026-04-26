@@ -6,6 +6,7 @@ Offline-first TOTP (“authenticator app”) tooling built around a Rust **core*
 
 - **[User guide](authenticator/docs/USER_GUIDE.md)** — GUI + CLI usage, database/passphrase behavior, backups, troubleshooting  
 - **[Build and layout](authenticator/docs/BUILD_AND_LAYOUT.md)** — folder map, `cargo` commands, where `.exe` files are produced  
+- **[Release steps](authenticator/docs/RELEASE.md)** — test, release build, smoke test, optional tagging, shipping binaries  
 - **[Public repo checklist](authenticator/docs/PUBLIC_REPO_CHECKLIST.md)** — what must never be committed on a public GitHub repo  
 - **[Docs index](authenticator/docs/README.md)** — table of contents for `authenticator/docs/`
 
