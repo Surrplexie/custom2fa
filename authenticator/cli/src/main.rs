@@ -109,13 +109,14 @@ fn main() {
             println!("Account added successfully.");
         }
         Command::List => {
-            let accounts = match load_accounts(&args.db, &passphrase) {
+            let mut accounts = match load_accounts(&args.db, &passphrase) {
                 Ok(a) => a,
                 Err(e) => {
                     eprintln!("Failed to load account database: {e}");
                     std::process::exit(1);
                 }
             };
+            accounts.sort_by_key(|a| a.label.to_lowercase());
 
             if accounts.is_empty() {
                 println!("No accounts saved.");

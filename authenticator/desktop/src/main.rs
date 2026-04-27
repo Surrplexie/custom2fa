@@ -68,6 +68,7 @@ impl Custom2faApp {
             return Err("Database passphrase is required.".to_string());
         }
         self.accounts = load_accounts(&self.db_pathbuf(), &self.db_passphrase).map_err(|e| e.to_string())?;
+        self.accounts.sort_by_key(|a| a.label.to_lowercase());
         if self.accounts.is_empty() {
             self.selected_label.clear();
             self.edit_issuer.clear();
