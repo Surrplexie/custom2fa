@@ -29,6 +29,9 @@ pub enum AuthError {
     #[error("Unsupported ciphertext version")]
     UnsupportedVersion,
 
+    #[error("Invalid TOTP parameters (period, digits, or algorithm)")]
+    InvalidTotpParameters,
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 

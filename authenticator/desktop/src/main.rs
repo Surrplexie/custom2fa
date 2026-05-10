@@ -1,9 +1,9 @@
-use custom2fa_core::account::Account;
+use custom2fa_core::account::{validate_digits, validate_period, Account, TotpAlgorithm};
 use custom2fa_core::otp_uri::{
     parse_otpauth_uri, parse_otpauth_uri_from_luma, parse_otpauth_uri_from_qr_image,
 };
 use custom2fa_core::storage::{export_backup, import_backup, load_accounts, save_accounts};
-use custom2fa_core::totp::{current_timestep, decode_secret, generate_totp};
+use custom2fa_core::totp::{decode_secret, format_totp_code, generate_totp_for_account};
 use eframe::egui;
 use keyring::Entry;
 use nokhwa::pixel_format::RgbFormat;
@@ -20,7 +20,6 @@ fn main() -> eframe::Result<()> {
     )
 }
 
-#[derive(Default)]
 struct Custom2faApp {
     db_path: String,
     db_passphrase: String,
@@ -28,9 +27,15 @@ struct Custom2faApp {
     issuer: String,
     label: String,
     secret: String,
+    add_algorithm: TotpAlgorithm,
+    add_period: String,
+    add_digits: String,
     edit_issuer: String,
     edit_label: String,
     edit_secret: String,
+    edit_algorithm: TotpAlgorithm,
+    edit_period: String,
+    edit_digits: String,
     uri: String,
     qr_image_path: String,
     camera_index: String,
@@ -40,6 +45,37 @@ struct Custom2faApp {
     generated_code: String,
     status: String,
     accounts: Vec<Account>,
+}
+
+impl Default for Custom2faApp {
+    fn default() -> Self {
+        Self {
+            db_path: String::new(),
+            db_passphrase: String::new(),
+            search_term: String::new(),
+            issuer: String::new(),
+            label: String::new(),
+            secret: String::new(),
+            add_algorithm: TotpAlgorithm::default(),
+            add_period: "30".to_string(),
+            add_digits: "6".to_string(),
+            edit_issuer: String::new(),
+            edit_label: String::new(),
+            edit_secret: String::new(),
+            edit_algorithm: TotpAlgorithm::default(),
+            edit_period: "30".to_string(),
+            edit_digits: "6".to_string(),
+            uri: String::new(),
+            qr_image_path: String::new(),
+            camera_index: "0".to_string(),
+            backup_path: String::new(),
+            backup_passphrase: String::new(),
+            selected_label: String::new(),
+            generated_code: String::new(),
+            status: String::new(),
+            accounts: Vec::new(),
+        }
+    }
 }
 
 impl Custom2faApp {
@@ -74,6 +110,9 @@ impl Custom2faApp {
             self.edit_issuer.clear();
             self.edit_label.clear();
             self.edit_secret.clear();
+            self.edit_algorithm = TotpAlgorithm::default();
+            self.edit_period = "30".to_string();
+            self.edit_digits = "6".to_string();
         } else if self.selected_label.is_empty()
             || !self.accounts.iter().any(|a| a.label == self.selected_label)
         {
@@ -101,6 +140,9 @@ impl Custom2faApp {
             self.edit_issuer = account.issuer.clone();
             self.edit_label = account.label.clone();
             self.edit_secret.clear();
+            self.edit_algorithm = account.algorithm;
+            self.edit_period = account.period_seconds.to_string();
+            self.edit_digits = account.digits.to_string();
         }
     }
 
@@ -109,6 +151,18 @@ impl Custom2faApp {
             return Err("Issuer, label, and secret are required.".to_string());
         }
         let secret_bytes = decode_secret(&self.secret).map_err(|e| e.to_string())?;
+        let period_seconds = self
+            .add_period
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| "Period must be a positive number (seconds).".to_string())?;
+        let digits = self
+            .add_digits
+            .trim()
+            .parse::<u8>()
+            .map_err(|_| "Digits must be a number (typically 6 or 8).".to_string())?;
+        validate_period(period_seconds).map_err(|e| e.to_string())?;
+        validate_digits(digits).map_err(|e| e.to_string())?;
         self.reload_accounts()?;
         if self.accounts.iter().any(|a| a.label == self.label) {
             return Err("An account with this label already exists.".to_string());
@@ -117,6 +171,9 @@ impl Custom2faApp {
             issuer: self.issuer.clone(),
             label: self.label.clone(),
             secret: secret_bytes,
+            algorithm: self.add_algorithm,
+            period_seconds,
+            digits,
         });
         save_accounts(&self.db_pathbuf(), &self.accounts, &self.db_passphrase).map_err(|e| e.to_string())?;
         Ok(())
@@ -192,8 +249,8 @@ impl Custom2faApp {
             .iter()
             .find(|a| a.label == self.selected_label)
             .ok_or_else(|| "Select an account label first.".to_string())?;
-        let code = generate_totp(&account.secret, current_timestep(), 6);
-        self.generated_code = format!("{code:06}");
+        let code = generate_totp_for_account(account).map_err(|e| e.to_string())?;
+        self.generated_code = format_totp_code(code, account.digits);
         Ok(())
     }
 
@@ -233,6 +290,19 @@ impl Custom2faApp {
             return Err("Edit issuer and label are required.".to_string());
         }
 
+        let period_seconds = self
+            .edit_period
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| "Period must be a positive number (seconds).".to_string())?;
+        let digits = self
+            .edit_digits
+            .trim()
+            .parse::<u8>()
+            .map_err(|_| "Digits must be a number (typically 6 or 8).".to_string())?;
+        validate_period(period_seconds).map_err(|e| e.to_string())?;
+        validate_digits(digits).map_err(|e| e.to_string())?;
+
         self.reload_accounts()?;
         let index = self
             .accounts
@@ -251,6 +321,9 @@ impl Custom2faApp {
 
         self.accounts[index].issuer = self.edit_issuer.clone();
         self.accounts[index].label = self.edit_label.clone();
+        self.accounts[index].algorithm = self.edit_algorithm;
+        self.accounts[index].period_seconds = period_seconds;
+        self.accounts[index].digits = digits;
         if !self.edit_secret.trim().is_empty() {
             self.accounts[index].secret = decode_secret(&self.edit_secret).map_err(|e| e.to_string())?;
         }
@@ -365,6 +438,24 @@ impl eframe::App for Custom2faApp {
                 ui.label("Base32 secret");
                 ui.text_edit_singleline(&mut self.secret);
             });
+            ui.horizontal(|ui| {
+                ui.label("Algorithm");
+                egui::ComboBox::from_id_source("add_algo")
+                    .selected_text(format!("{}", self.add_algorithm))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.add_algorithm, TotpAlgorithm::Sha1, "SHA1");
+                        ui.selectable_value(&mut self.add_algorithm, TotpAlgorithm::Sha256, "SHA256");
+                        ui.selectable_value(&mut self.add_algorithm, TotpAlgorithm::Sha512, "SHA512");
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Period (seconds)");
+                ui.text_edit_singleline(&mut self.add_period);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Digits");
+                ui.text_edit_singleline(&mut self.add_digits);
+            });
             if ui.button("Add Manual Account").clicked() {
                 self.run_action(|s| s.add_manual());
             }
@@ -456,6 +547,24 @@ impl eframe::App for Custom2faApp {
             ui.horizontal(|ui| {
                 ui.label("New base32 secret (optional)");
                 ui.text_edit_singleline(&mut self.edit_secret);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Algorithm");
+                egui::ComboBox::from_id_source("edit_algo")
+                    .selected_text(format!("{}", self.edit_algorithm))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.edit_algorithm, TotpAlgorithm::Sha1, "SHA1");
+                        ui.selectable_value(&mut self.edit_algorithm, TotpAlgorithm::Sha256, "SHA256");
+                        ui.selectable_value(&mut self.edit_algorithm, TotpAlgorithm::Sha512, "SHA512");
+                    });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Period (seconds)");
+                ui.text_edit_singleline(&mut self.edit_period);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Digits");
+                ui.text_edit_singleline(&mut self.edit_digits);
             });
             ui.horizontal(|ui| {
                 if ui.button("Update Selected Account").clicked() {

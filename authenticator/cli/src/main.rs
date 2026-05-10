@@ -1,9 +1,14 @@
 use clap::Parser;
 use clap::Subcommand;
-use custom2fa_core::account::Account;
-use custom2fa_core::otp_uri::{parse_otpauth_uri, parse_otpauth_uri_from_qr_image};
+use custom2fa_core::account::{
+    validate_digits, validate_period, Account, TotpAlgorithm,
+    DEFAULT_DIGITS, DEFAULT_PERIOD_SECONDS,
+};
+use custom2fa_core::otp_uri::{
+    parse_otpauth_uri, parse_otpauth_uri_from_qr_image, parse_totp_algorithm_label,
+};
 use custom2fa_core::storage::{export_backup, import_backup, load_accounts, save_accounts};
-use custom2fa_core::totp::{current_timestep, decode_secret, generate_totp};
+use custom2fa_core::totp::{decode_secret, format_totp_code, generate_totp_for_account};
 use rpassword::prompt_password;
 use std::path::PathBuf;
 use zeroize::Zeroize;
@@ -31,6 +36,15 @@ enum Command {
         label: String,
         #[arg(long)]
         secret: String,
+        /// TOTP hash: SHA1, SHA256, or SHA512 (default SHA1).
+        #[arg(long)]
+        algorithm: Option<String>,
+        /// TOTP period in seconds (default 30).
+        #[arg(long)]
+        period: Option<u32>,
+        /// Number of digits (default 6).
+        #[arg(long)]
+        digits: Option<u8>,
     },
     List,
     Code {
@@ -74,6 +88,9 @@ fn main() {
             issuer,
             label,
             secret,
+            algorithm,
+            period,
+            digits,
         } => {
             let secret_bytes = match decode_secret(&secret) {
                 Ok(s) => s,
@@ -82,6 +99,28 @@ fn main() {
                     std::process::exit(1);
                 }
             };
+
+            let algorithm_parsed = match algorithm.as_deref() {
+                None => TotpAlgorithm::default(),
+                Some(s) => match parse_totp_algorithm_label(s) {
+                    Ok(a) => a,
+                    Err(_) => {
+                        eprintln!("Invalid algorithm: use SHA1, SHA256, or SHA512.");
+                        std::process::exit(1);
+                    }
+                },
+            };
+
+            let period_seconds = period.unwrap_or(DEFAULT_PERIOD_SECONDS);
+            let digits_val = digits.unwrap_or(DEFAULT_DIGITS);
+            if let Err(e) = validate_period(period_seconds) {
+                eprintln!("Invalid period: {e}");
+                std::process::exit(1);
+            }
+            if let Err(e) = validate_digits(digits_val) {
+                eprintln!("Invalid digits: {e}");
+                std::process::exit(1);
+            }
 
             let mut accounts = match load_accounts(&args.db, &passphrase) {
                 Ok(a) => a,
@@ -100,6 +139,9 @@ fn main() {
                 issuer,
                 label,
                 secret: secret_bytes,
+                algorithm: algorithm_parsed,
+                period_seconds,
+                digits: digits_val,
             });
 
             if let Err(e) = save_accounts(&args.db, &accounts, &passphrase) {
@@ -124,7 +166,14 @@ fn main() {
             }
 
             for account in accounts {
-                println!("{} ({})", account.label, account.issuer);
+                println!(
+                    "{} ({}) [{} · {}s · {} digits]",
+                    account.label,
+                    account.issuer,
+                    account.algorithm,
+                    account.period_seconds,
+                    account.digits
+                );
             }
         }
         Command::Code { label } => {
@@ -141,9 +190,14 @@ fn main() {
                 std::process::exit(1);
             };
 
-            let timestep = current_timestep();
-            let code = generate_totp(&account.secret, timestep, 6);
-            println!("{:06}", code);
+            let code = match generate_totp_for_account(&account) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Failed to generate code: {e}");
+                    std::process::exit(1);
+                }
+            };
+            println!("{}", format_totp_code(code, account.digits));
         }
         Command::ImportUri { uri } => {
             let account = match parse_otpauth_uri(&uri) {
