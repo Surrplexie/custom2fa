@@ -1,4 +1,4 @@
-# custom2fa
+# custom2fa (App)
 
 Offline-first TOTP (“authenticator app”) tooling built around a Rust **core** library, with a **CLI** and a **desktop hub** for day-to-day use. This repository is maintained for **development and research**; use at your own risk and review the security notes before relying on it for real accounts.
 
