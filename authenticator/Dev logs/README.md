@@ -36,3 +36,10 @@
 - Wrote a formal release runbook: `authenticator/docs/RELEASE.md` (test, `cargo build --release`, artifact paths, smoke test, optional git tag, GitHub release asset guidance).
 - Linked the release doc from the documentation index in `authenticator/docs/README.md`.
 - Confirmed `cargo check -p custom2fa_desktop` after copy-button layout fix so the shipping GUI build includes the control without requiring a prior code generation.
+
+9 May 2026 - 0.2.0 - Release
+- Extended `Account` and vault JSON with **TOTP algorithm** (`SHA1` / `SHA256` / `SHA512`), **period** (seconds), and **digits**; older vaults still load with defaults **SHA1 · 30s · 6 digits** via serde defaults.
+- Implemented RFC 6238 `otpauth://` parsing for `algorithm`, `period`, and `digits`; code generation uses **HMAC-SHA1/256/512** with dynamic truncation and unit tests aligned with RFC 6238 Appendix B vectors.
+- CLI: `add` accepts optional `--algorithm`, `--period`, `--digits`; `list` shows parameters per row; `code` formats width to match stored digit count.
+- Desktop hub: manual add and account editor include algorithm selection plus period and digits fields; **Generate Current Code** follows each account’s stored parameters.
+- Workspace crates bumped to **0.2.0** (`custom2fa_core`, `custom2fa_cli`, `custom2fa_desktop`). Release runbook and user guide updated for this cut.

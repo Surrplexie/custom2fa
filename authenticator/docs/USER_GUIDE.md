@@ -62,11 +62,11 @@ Create a folder that stays **out of git** (see repo-root `.gitignore`):
 3. Optional: **Save / Load passphrase to OS keychain** (Windows Credential Manager). This is **per user profile on this PC**; it does not sync to other machines.
 4. **Load Accounts** — decrypts and lists accounts in memory for the session UI.
 5. Add or import:
-   - **Manual secret**: issuer, label, Base32 secret (spaces allowed in the key; the app normalizes).
+   - **Manual secret**: issuer, label, Base32 secret (spaces allowed in the key; the app normalizes), plus **algorithm** (SHA1 / SHA256 / SHA512), **period** in seconds, and **digits** (defaults: SHA1, 30s, 6 digits).
    - **OTP URI**: paste full `otpauth://totp/...`.
    - **QR image path**: full path to a PNG/JPG screenshot. Surrounding quotes are trimmed automatically.
    - **Camera index**: integer such as `0` (first webcam). Use **Scan QR From Camera** only for live QR, not for file import.
-6. **Generate code** — pick label, click **Generate Current Code**. Codes are **6 digits**, **30-second** step, **SHA-1** TOTP (common default).
+6. **Generate code** — pick label, click **Generate Current Code**. Codes follow **each account’s stored** algorithm, period, and digit count (imported URIs preserve issuer defaults such as SHA256 or 8 digits).
 7. **Backup** — export an encrypted backup JSON with a **separate backup passphrase**; store offline. Import decrypts with backup passphrase and **re-encrypts** into your current DB passphrase.
 
 ## CLI — command overview
@@ -78,7 +78,7 @@ Global flags:
 
 Commands (subcommands):
 
-- `add --issuer ... --label ... --secret <BASE32>`
+- `add --issuer ... --label ... --secret <BASE32>` — optional `--algorithm SHA1|SHA256|SHA512`, `--period <seconds>`, `--digits <n>` (defaults: SHA1, 30, 6).
 - `list`
 - `code --label <label>`
 - `import-uri --uri "otpauth://..."`
@@ -100,4 +100,4 @@ Commands (subcommands):
 
 - No built-in cloud sync (copy DB or backup file yourself).
 - QR via **file path** or **single camera frame** — not a continuous live scanner UI.
-- TOTP parameters are aligned with the most common defaults; exotic URI parameters may not be fully honored end-to-end.
+- **HOTP** (`otpauth://hotp/...`) and other non-TOTP URI types are not supported.

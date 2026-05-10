@@ -6,11 +6,12 @@ Cross-platform **offline TOTP** tooling: shared Rust **core**, a **CLI**, and a 
 
 - [User guide](docs/USER_GUIDE.md)
 - [Build and layout](docs/BUILD_AND_LAYOUT.md)
+- [Release steps](docs/RELEASE.md)
 - [Public repo checklist](docs/PUBLIC_REPO_CHECKLIST.md)
 
 ## Features
 
-- TOTP generation (common defaults: SHA-1, 30s step, 6 digits)
+- TOTP generation (RFC 6238; **SHA1 / SHA256 / SHA512**, configurable period and digits; defaults SHA-1, 30s, 6 digits)
 - Offline operation (no network dependency for normal use)
 - Encrypted account database (`*.c2fa`, AES-256-GCM + PBKDF2)
 - `otpauth://` URI import
