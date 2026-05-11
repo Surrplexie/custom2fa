@@ -1,47 +1,175 @@
-# --- Rust / Cargo ---
+# =============================================================================
+# custom2fa — .gitignore
+# Covers: Rust/Cargo, personal vault data, OS noise (Windows + Linux),
+#         editor noise (VS Code, JetBrains, Vim/Neovim), secrets/keys.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# Rust / Cargo
+# -----------------------------------------------------------------------------
 **/target/
 **/*.rs.bk
+# Cargo.lock is intentionally tracked for binary crates (CLI + desktop).
+# Remove the line below only if you want to untrack it.
+# Cargo.lock
 
-# --- Local-only data (recommended layout) ---
-# Put your real `accounts.c2fa`, exports, scratch files under `local/` while developing.
+
+# -----------------------------------------------------------------------------
+# Personal vault / local data
+# Create a `local/` folder at repo root for your real accounts.c2fa and
+# exports — it will never be committed.
+# -----------------------------------------------------------------------------
 /local/
 **/local/
 
-# --- Encrypted app database files (never commit real vaults) ---
+# Encrypted app database files — never commit real vaults.
 *.c2fa
 
-# --- Typical local backup exports ---
-# Prefer storing exports under `/local/` (ignored above).
-# These are common default names from the GUI; widen only if you need to.
+# Common default backup export filename from the GUI.
 **/backup-2fa.json
 
-# --- Secrets / environment files ---
+# Any JSON export that looks like a 2FA export.
+**/2fa-export*.json
+**/export-2fa*.json
+
+
+# -----------------------------------------------------------------------------
+# Secrets / environment files
+# -----------------------------------------------------------------------------
 .env
 .env.*
 !.env.example
+*.secret
+secrets.toml
+secrets.json
 
-# --- Keys / certs (private material) ---
+
+# -----------------------------------------------------------------------------
+# Private keys and certificates
+# -----------------------------------------------------------------------------
 *.pem
 *.key
 *.p12
 *.pfx
 *.cer
 *.crt
+*.der
 id_rsa
+id_rsa.pub
 id_ed25519
+id_ed25519.pub
+id_ecdsa
+id_ecdsa.pub
+id_dsa
+id_dsa.pub
 *.ppk
+*.asc
 
-# --- OS / editor noise ---
-.DS_Store
+
+# -----------------------------------------------------------------------------
+# OS — Windows
+# -----------------------------------------------------------------------------
 Thumbs.db
+Thumbs.db:encryptable
 Desktop.ini
+ehthumbs.db
+ehthumbs_vista.db
+$RECYCLE.BIN/
 *.lnk
+*.url
 
-# --- Logs / temp ---
+
+# -----------------------------------------------------------------------------
+# OS — Linux / macOS
+# -----------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.fseventsd
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+*~
+.nfs*
+
+
+# -----------------------------------------------------------------------------
+# Logs / temp / crash dumps
+# -----------------------------------------------------------------------------
 *.log
+*.log.*
 *.tmp
 *.temp
-*~
+*.bak
+*.orig
+*.swp
+*.swo
+crash-*.txt
+crash_*.txt
+*.dmp
+*.stackdump
 
-# --- JetBrains ---
+
+# -----------------------------------------------------------------------------
+# Editors — VS Code / Cursor
+# -----------------------------------------------------------------------------
+.vscode/
+# Uncomment to track shared launch / settings:
+# !.vscode/launch.json
+# !.vscode/extensions.json
+# !.vscode/settings.json
+*.code-workspace
+
+
+# -----------------------------------------------------------------------------
+# Editors — JetBrains (CLion, IntelliJ, RustRover)
+# -----------------------------------------------------------------------------
 .idea/
+*.iml
+*.iws
+*.ipr
+out/
+cmake-build-*/
+
+
+# -----------------------------------------------------------------------------
+# Editors — Vim / Neovim
+# -----------------------------------------------------------------------------
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+[._]s[a-rt-v][a-z]
+[._]ss[a-gi-z]
+[._]sw[a-p]
+Session.vim
+Sessionx.vim
+.netrwhist
+tags
+[._]*.un~
+
+
+# -----------------------------------------------------------------------------
+# Editors — Emacs
+# -----------------------------------------------------------------------------
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+
+# -----------------------------------------------------------------------------
+# Build / packaging artefacts (non-Cargo)
+# -----------------------------------------------------------------------------
+dist/
+build/
+*.zip
+*.tar.gz
+*.tar.xz
+*.tar.bz2
+*.7z
+*.exe.zip
