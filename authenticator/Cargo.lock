@@ -1182,7 +1182,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "custom2fa_cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "custom2fa_core",
@@ -1192,7 +1192,7 @@ dependencies = [
 
 [[package]]
 name = "custom2fa_core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "base32",
@@ -1214,7 +1214,7 @@ dependencies = [
 
 [[package]]
 name = "custom2fa_desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "custom2fa_core",
  "eframe",
