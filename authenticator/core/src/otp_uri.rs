@@ -91,6 +91,7 @@ pub fn parse_otpauth_uri(uri: &str) -> Result<Account, AuthError> {
         algorithm,
         period_seconds,
         digits,
+        category: String::new(),
     })
 }
 

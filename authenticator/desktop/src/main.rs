@@ -1,601 +1,1357 @@
+// Custom2FA Desktop Hub — modernised GUI
+// Dark theme · sidebar · live-refresh codes · countdown timer · categories
+// Offline-first TOTP — no network required for normal use.
+
 use custom2fa_core::account::{validate_digits, validate_period, Account, TotpAlgorithm};
 use custom2fa_core::otp_uri::{
     parse_otpauth_uri, parse_otpauth_uri_from_luma, parse_otpauth_uri_from_qr_image,
 };
 use custom2fa_core::storage::{export_backup, import_backup, load_accounts, save_accounts};
 use custom2fa_core::totp::{decode_secret, format_totp_code, generate_totp_for_account};
-use eframe::egui;
+use eframe::egui::{self, Color32, RichText, Stroke};
 use keyring::Entry;
 use nokhwa::pixel_format::RgbFormat;
 use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType};
 use nokhwa::Camera;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-fn main() -> eframe::Result<()> {
-    let options = eframe::NativeOptions::default();
-    eframe::run_native(
-        "Custom2FA Hub",
-        options,
-        Box::new(|_cc| Ok(Box::<Custom2faApp>::default())),
-    )
+// ── Theme constants ──────────────────────────────────────────────────────────
+const C_PANEL: Color32 = Color32::from_rgb(22, 22, 29);
+const C_CARD: Color32 = Color32::from_rgb(31, 35, 53);
+const C_BORDER: Color32 = Color32::from_rgb(61, 89, 161);
+const C_ACCENT: Color32 = Color32::from_rgb(122, 162, 247);
+const C_TEXT: Color32 = Color32::from_rgb(192, 202, 245);
+const C_MUTED: Color32 = Color32::from_rgb(86, 95, 137);
+const C_OK: Color32 = Color32::from_rgb(158, 206, 106);
+const C_ERR: Color32 = Color32::from_rgb(247, 118, 142);
+const C_WARN: Color32 = Color32::from_rgb(224, 175, 104);
+
+fn build_visuals() -> egui::Visuals {
+    let mut v = egui::Visuals::dark();
+    v.panel_fill = C_PANEL;
+    v.window_fill = C_CARD;
+    v.window_stroke = Stroke::new(1.0, C_BORDER);
+    v.widgets.noninteractive.bg_fill = C_CARD;
+    v.widgets.noninteractive.fg_stroke = Stroke::new(1.0, C_TEXT);
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, C_BORDER);
+    v.widgets.inactive.bg_fill = Color32::from_rgb(44, 50, 74);
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0, C_TEXT);
+    v.widgets.hovered.bg_fill = Color32::from_rgb(55, 63, 90);
+    v.widgets.hovered.fg_stroke = Stroke::new(1.5, C_ACCENT);
+    v.widgets.active.bg_fill = Color32::from_rgb(61, 89, 161);
+    v.widgets.active.fg_stroke = Stroke::new(2.0, Color32::WHITE);
+    v.selection.bg_fill = Color32::from_rgb(40, 60, 110);
+    v.selection.stroke = Stroke::new(1.0, C_ACCENT);
+    v.extreme_bg_color = Color32::from_rgb(16, 16, 24);
+    v.faint_bg_color = Color32::from_rgb(26, 30, 46);
+    v
 }
 
-struct Custom2faApp {
-    db_path: String,
-    db_passphrase: String,
-    search_term: String,
+// ── Navigation ───────────────────────────────────────────────────────────────
+#[derive(PartialEq, Clone, Copy, Default, Debug)]
+enum Panel {
+    #[default]
+    Accounts,
+    Add,
+    Backup,
+    Settings,
+}
+
+#[derive(PartialEq, Clone, Copy, Default, Debug)]
+enum AddTab {
+    #[default]
+    Manual,
+    Uri,
+    QrImage,
+    Camera,
+}
+
+// ── Card display data (collected before rendering to avoid borrow conflicts) ─
+struct CardData {
     issuer: String,
     label: String,
-    secret: String,
-    add_algorithm: TotpAlgorithm,
-    add_period: String,
-    add_digits: String,
-    edit_issuer: String,
-    edit_label: String,
-    edit_secret: String,
-    edit_algorithm: TotpAlgorithm,
-    edit_period: String,
-    edit_digits: String,
-    uri: String,
-    qr_image_path: String,
-    camera_index: String,
-    backup_path: String,
-    backup_passphrase: String,
-    selected_label: String,
-    generated_code: String,
-    status: String,
+    category: String,
+    algo: String,
+    digits: u8,
+    period: u32,
+    code: String,
+    raw_code: String,
+    secs: u32,
+    frac: f32,
+}
+
+enum CardAction {
+    Edit(String),
+    Delete(String),
+    Copied { label: String, code: String },
+}
+
+// ── App state ────────────────────────────────────────────────────────────────
+struct Custom2faApp {
+    // vault
+    db_path: String,
+    db_pass: String,
+    accounts_loaded: bool,
     accounts: Vec<Account>,
+    live_codes: HashMap<String, (String, String, u32, f32)>, // label -> (disp, raw, secs, frac)
+
+    // navigation / filter
+    panel: Panel,
+    add_tab: AddTab,
+    sel_cat: String, // "" = All, "__none__" = uncategorised
+    sel_label: String,
+    search: String,
+
+    // add-account form
+    af_issuer: String,
+    af_label: String,
+    af_secret: String,
+    af_algo: TotpAlgorithm,
+    af_period: u32,
+    af_digits: u8,
+    af_cat: String,
+
+    // import sub-fields
+    if_uri: String,
+    if_qr: String,
+    if_cam: String,
+
+    // edit window
+    editing: Option<String>, // original label
+    ef_issuer: String,
+    ef_label: String,
+    ef_secret: String,
+    ef_algo: TotpAlgorithm,
+    ef_period: u32,
+    ef_digits: u8,
+    ef_cat: String,
+
+    // backup
+    bk_path: String,
+    bk_pass: String,
+
+    // status bar
+    status: String,
+    is_err: bool,
+
+    // confirm-delete
+    del_label: Option<String>,
 }
 
 impl Default for Custom2faApp {
     fn default() -> Self {
         Self {
-            db_path: String::new(),
-            db_passphrase: String::new(),
-            search_term: String::new(),
-            issuer: String::new(),
-            label: String::new(),
-            secret: String::new(),
-            add_algorithm: TotpAlgorithm::default(),
-            add_period: "30".to_string(),
-            add_digits: "6".to_string(),
-            edit_issuer: String::new(),
-            edit_label: String::new(),
-            edit_secret: String::new(),
-            edit_algorithm: TotpAlgorithm::default(),
-            edit_period: "30".to_string(),
-            edit_digits: "6".to_string(),
-            uri: String::new(),
-            qr_image_path: String::new(),
-            camera_index: "0".to_string(),
-            backup_path: String::new(),
-            backup_passphrase: String::new(),
-            selected_label: String::new(),
-            generated_code: String::new(),
-            status: String::new(),
+            db_path: "accounts.c2fa".into(),
+            db_pass: String::new(),
+            accounts_loaded: false,
             accounts: Vec::new(),
+            live_codes: HashMap::new(),
+
+            panel: Panel::default(),
+            add_tab: AddTab::default(),
+            sel_cat: String::new(),
+            sel_label: String::new(),
+            search: String::new(),
+
+            af_issuer: String::new(),
+            af_label: String::new(),
+            af_secret: String::new(),
+            af_algo: TotpAlgorithm::default(),
+            af_period: 30,
+            af_digits: 6,
+            af_cat: String::new(),
+
+            if_uri: String::new(),
+            if_qr: String::new(),
+            if_cam: "0".into(),
+
+            editing: None,
+            ef_issuer: String::new(),
+            ef_label: String::new(),
+            ef_secret: String::new(),
+            ef_algo: TotpAlgorithm::default(),
+            ef_period: 30,
+            ef_digits: 6,
+            ef_cat: String::new(),
+
+            bk_path: "backup-2fa.json".into(),
+            bk_pass: String::new(),
+
+            status: String::new(),
+            is_err: false,
+
+            del_label: None,
         }
     }
 }
 
 impl Custom2faApp {
-    fn clean_path_input(raw: &str) -> String {
-        raw.trim().trim_matches('"').trim().to_string()
+    // ── Helpers ──────────────────────────────────────────────────────────────
+    fn db_pb(&self) -> PathBuf {
+        PathBuf::from(&self.db_path)
     }
 
-    fn ensure_defaults(&mut self) {
-        if self.db_path.is_empty() {
-            self.db_path = "accounts.c2fa".to_string();
-        }
-        if self.backup_path.is_empty() {
-            self.backup_path = "backup-2fa.json".to_string();
-        }
-        if self.camera_index.is_empty() {
-            self.camera_index = "0".to_string();
+    fn clean_path(s: &str) -> String {
+        s.trim().trim_matches('"').trim().to_string()
+    }
+
+    fn set_ok(&mut self, msg: impl Into<String>) {
+        self.status = msg.into();
+        self.is_err = false;
+    }
+
+    fn set_err(&mut self, msg: impl Into<String>) {
+        self.status = msg.into();
+        self.is_err = true;
+    }
+
+    fn exec<F: FnOnce(&mut Self) -> Result<(), String>>(&mut self, ok: &str, f: F) {
+        match f(self) {
+            Ok(_) => self.set_ok(ok),
+            Err(e) => self.set_err(e),
         }
     }
 
-    fn db_pathbuf(&self) -> PathBuf {
-        PathBuf::from(self.db_path.clone())
+    // ── Live codes ───────────────────────────────────────────────────────────
+    fn refresh_live_codes(&mut self) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        self.live_codes.clear();
+        for acc in &self.accounts {
+            let period = acc.period_seconds as i64;
+            let elapsed = now.rem_euclid(period);
+            let secs = (period - elapsed) as u32;
+            let frac = elapsed as f32 / period as f32;
+            let raw = match generate_totp_for_account(acc) {
+                Ok(c) => format_totp_code(c, acc.digits),
+                Err(_) => "------".to_string(),
+            };
+            let disp = match raw.len() {
+                6 => format!("{} {}", &raw[..3], &raw[3..]),
+                8 => format!("{} {}", &raw[..4], &raw[4..]),
+                _ => raw.clone(),
+            };
+            self.live_codes
+                .insert(acc.label.clone(), (disp, raw, secs, frac));
+        }
     }
 
-    fn reload_accounts(&mut self) -> Result<(), String> {
-        if self.db_passphrase.is_empty() {
-            return Err("Database passphrase is required.".to_string());
+    // ── Categories ───────────────────────────────────────────────────────────
+    fn categories(&self) -> Vec<String> {
+        let mut seen = std::collections::BTreeSet::new();
+        for a in &self.accounts {
+            if !a.category.is_empty() {
+                seen.insert(a.category.clone());
+            }
         }
-        self.accounts = load_accounts(&self.db_pathbuf(), &self.db_passphrase).map_err(|e| e.to_string())?;
-        self.accounts.sort_by_key(|a| a.label.to_lowercase());
-        if self.accounts.is_empty() {
-            self.selected_label.clear();
-            self.edit_issuer.clear();
-            self.edit_label.clear();
-            self.edit_secret.clear();
-            self.edit_algorithm = TotpAlgorithm::default();
-            self.edit_period = "30".to_string();
-            self.edit_digits = "6".to_string();
-        } else if self.selected_label.is_empty()
-            || !self.accounts.iter().any(|a| a.label == self.selected_label)
-        {
-            self.selected_label = self.accounts[0].label.clone();
-            self.sync_edit_fields_from_selection();
-        }
-        Ok(())
+        seen.into_iter().collect()
     }
 
-    fn filtered_accounts(&self) -> Vec<&Account> {
-        if self.search_term.trim().is_empty() {
-            return self.accounts.iter().collect();
-        }
-        let term = self.search_term.to_lowercase();
+    fn filtered_labels(&self) -> Vec<String> {
+        let term = self.search.to_lowercase();
         self.accounts
             .iter()
             .filter(|a| {
-                a.label.to_lowercase().contains(&term) || a.issuer.to_lowercase().contains(&term)
+                let cat_ok = if self.sel_cat.is_empty() {
+                    true
+                } else if self.sel_cat == "__none__" {
+                    a.category.is_empty()
+                } else {
+                    a.category == self.sel_cat
+                };
+                if !cat_ok {
+                    return false;
+                }
+                if term.is_empty() {
+                    return true;
+                }
+                a.label.to_lowercase().contains(&term)
+                    || a.issuer.to_lowercase().contains(&term)
+                    || a.category.to_lowercase().contains(&term)
             })
+            .map(|a| a.label.clone())
             .collect()
     }
 
-    fn sync_edit_fields_from_selection(&mut self) {
-        if let Some(account) = self.accounts.iter().find(|a| a.label == self.selected_label) {
-            self.edit_issuer = account.issuer.clone();
-            self.edit_label = account.label.clone();
-            self.edit_secret.clear();
-            self.edit_algorithm = account.algorithm;
-            self.edit_period = account.period_seconds.to_string();
-            self.edit_digits = account.digits.to_string();
+    // ── Vault operations ─────────────────────────────────────────────────────
+    fn do_reload(&mut self) -> Result<(), String> {
+        if self.db_pass.is_empty() {
+            return Err("Passphrase is required.".into());
         }
-    }
-
-    fn add_manual(&mut self) -> Result<(), String> {
-        if self.issuer.is_empty() || self.label.is_empty() || self.secret.is_empty() {
-            return Err("Issuer, label, and secret are required.".to_string());
-        }
-        let secret_bytes = decode_secret(&self.secret).map_err(|e| e.to_string())?;
-        let period_seconds = self
-            .add_period
-            .trim()
-            .parse::<u32>()
-            .map_err(|_| "Period must be a positive number (seconds).".to_string())?;
-        let digits = self
-            .add_digits
-            .trim()
-            .parse::<u8>()
-            .map_err(|_| "Digits must be a number (typically 6 or 8).".to_string())?;
-        validate_period(period_seconds).map_err(|e| e.to_string())?;
-        validate_digits(digits).map_err(|e| e.to_string())?;
-        self.reload_accounts()?;
-        if self.accounts.iter().any(|a| a.label == self.label) {
-            return Err("An account with this label already exists.".to_string());
-        }
-        self.accounts.push(Account {
-            issuer: self.issuer.clone(),
-            label: self.label.clone(),
-            secret: secret_bytes,
-            algorithm: self.add_algorithm,
-            period_seconds,
-            digits,
+        self.accounts = load_accounts(&self.db_pb(), &self.db_pass).map_err(|e| e.to_string())?;
+        self.accounts.sort_by(|a, b| {
+            a.category
+                .to_lowercase()
+                .cmp(&b.category.to_lowercase())
+                .then(
+                    a.issuer
+                        .to_lowercase()
+                        .cmp(&b.issuer.to_lowercase()),
+                )
+                .then(a.label.to_lowercase().cmp(&b.label.to_lowercase()))
         });
-        save_accounts(&self.db_pathbuf(), &self.accounts, &self.db_passphrase).map_err(|e| e.to_string())?;
+        self.accounts_loaded = true;
+        if !self.accounts.iter().any(|a| a.label == self.sel_label) {
+            self.sel_label = self
+                .accounts
+                .first()
+                .map(|a| a.label.clone())
+                .unwrap_or_default();
+        }
         Ok(())
     }
 
-    fn import_uri(&mut self) -> Result<(), String> {
-        if self.uri.is_empty() {
-            return Err("OTP URI is required.".to_string());
-        }
-        let account = parse_otpauth_uri(&self.uri).map_err(|e| e.to_string())?;
-        self.reload_accounts()?;
+    fn do_save(&mut self) -> Result<(), String> {
+        save_accounts(&self.db_pb(), &self.accounts, &self.db_pass).map_err(|e| e.to_string())
+    }
+
+    fn push_imported(&mut self, account: Account) -> Result<(), String> {
         if self.accounts.iter().any(|a| a.label == account.label) {
-            return Err("An account with this label already exists.".to_string());
+            return Err("An account with this label already exists.".into());
         }
         self.accounts.push(account);
-        save_accounts(&self.db_pathbuf(), &self.accounts, &self.db_passphrase).map_err(|e| e.to_string())?;
+        self.do_save()?;
+        self.do_reload()?;
+        self.panel = Panel::Accounts;
         Ok(())
     }
 
-    fn import_qr(&mut self) -> Result<(), String> {
-        if self.qr_image_path.is_empty() {
-            return Err("QR image path is required.".to_string());
+    fn do_add_manual(&mut self) -> Result<(), String> {
+        if self.af_issuer.is_empty() || self.af_label.is_empty() || self.af_secret.is_empty() {
+            return Err("Issuer, label, and secret are required.".into());
         }
+        let secret = decode_secret(&self.af_secret).map_err(|e| e.to_string())?;
+        validate_period(self.af_period).map_err(|e| e.to_string())?;
+        validate_digits(self.af_digits).map_err(|e| e.to_string())?;
+        self.do_reload()?;
+        if self.accounts.iter().any(|a| a.label == self.af_label) {
+            return Err("An account with this label already exists.".into());
+        }
+        let account = Account {
+            issuer: self.af_issuer.clone(),
+            label: self.af_label.clone(),
+            secret,
+            algorithm: self.af_algo,
+            period_seconds: self.af_period,
+            digits: self.af_digits,
+            category: self.af_cat.clone(),
+        };
+        self.accounts.push(account);
+        self.do_save()?;
+        self.do_reload()?;
+        self.panel = Panel::Accounts;
+        self.af_issuer.clear();
+        self.af_label.clear();
+        self.af_secret.clear();
+        self.af_algo = TotpAlgorithm::default();
+        self.af_period = 30;
+        self.af_digits = 6;
+        self.af_cat.clear();
+        Ok(())
+    }
 
-        let cleaned = Self::clean_path_input(&self.qr_image_path);
-        if cleaned.is_empty() {
-            return Err("QR image path is required.".to_string());
+    fn do_import_uri(&mut self) -> Result<(), String> {
+        if self.if_uri.is_empty() {
+            return Err("OTP URI is required.".into());
         }
-        let path = PathBuf::from(cleaned.clone());
+        let account = parse_otpauth_uri(&self.if_uri).map_err(|e| e.to_string())?;
+        self.do_reload()?;
+        let label = self.if_uri.clone();
+        self.if_uri.clear();
+        let _ = label;
+        self.push_imported(account)
+    }
+
+    fn do_import_qr(&mut self) -> Result<(), String> {
+        let cleaned = Self::clean_path(&self.if_qr);
+        let path = PathBuf::from(&cleaned);
         if !path.exists() {
-            return Err(format!("QR image file was not found: {cleaned}"));
+            return Err(format!("File not found: {cleaned}"));
         }
-
-        let account = parse_otpauth_uri_from_qr_image(&path)
-            .map_err(|e| e.to_string())?;
-        self.reload_accounts()?;
-        if self.accounts.iter().any(|a| a.label == account.label) {
-            return Err("An account with this label already exists.".to_string());
-        }
-        self.accounts.push(account);
-        save_accounts(&self.db_pathbuf(), &self.accounts, &self.db_passphrase).map_err(|e| e.to_string())?;
-        Ok(())
+        let account =
+            parse_otpauth_uri_from_qr_image(&path).map_err(|e| e.to_string())?;
+        self.do_reload()?;
+        self.if_qr.clear();
+        self.push_imported(account)
     }
 
-    fn import_qr_from_camera(&mut self) -> Result<(), String> {
-        let index = self
-            .camera_index
+    fn do_import_camera(&mut self) -> Result<(), String> {
+        let idx = self
+            .if_cam
             .parse::<u32>()
-            .map_err(|_| "Camera index must be a number (ex: 0).".to_string())?;
-        let requested =
+            .map_err(|_| "Camera index must be a number (e.g. 0).".to_string())?;
+        let fmt =
             RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
-        let mut camera =
-            Camera::new(CameraIndex::Index(index), requested).map_err(|e| e.to_string())?;
-        camera.open_stream().map_err(|e| e.to_string())?;
-        let frame = camera.frame().map_err(|e| e.to_string())?;
-        let rgb_image = frame.decode_image::<RgbFormat>().map_err(|e| e.to_string())?;
-        let gray_image = image::DynamicImage::ImageRgb8(rgb_image).to_luma8();
-        let account = parse_otpauth_uri_from_luma(gray_image).map_err(|e| e.to_string())?;
-
-        self.reload_accounts()?;
-        if self.accounts.iter().any(|a| a.label == account.label) {
-            return Err("An account with this label already exists.".to_string());
-        }
-        self.accounts.push(account);
-        save_accounts(&self.db_pathbuf(), &self.accounts, &self.db_passphrase).map_err(|e| e.to_string())?;
-        Ok(())
+        let mut cam = Camera::new(CameraIndex::Index(idx), fmt).map_err(|e| e.to_string())?;
+        cam.open_stream().map_err(|e| e.to_string())?;
+        let frame = cam.frame().map_err(|e| e.to_string())?;
+        let rgb = frame
+            .decode_image::<RgbFormat>()
+            .map_err(|e| e.to_string())?;
+        let gray = image::DynamicImage::ImageRgb8(rgb).to_luma8();
+        let account = parse_otpauth_uri_from_luma(gray).map_err(|e| e.to_string())?;
+        self.do_reload()?;
+        self.push_imported(account)
     }
 
-    fn generate_current_code(&mut self) -> Result<(), String> {
-        self.reload_accounts()?;
-        let account = self
+    fn do_update_account(&mut self) -> Result<(), String> {
+        let orig = self
+            .editing
+            .clone()
+            .ok_or("No account selected for editing.")?;
+        if self.ef_label.trim().is_empty() || self.ef_issuer.trim().is_empty() {
+            return Err("Issuer and label are required.".into());
+        }
+        validate_period(self.ef_period).map_err(|e| e.to_string())?;
+        validate_digits(self.ef_digits).map_err(|e| e.to_string())?;
+        self.do_reload()?;
+        let idx = self
             .accounts
             .iter()
-            .find(|a| a.label == self.selected_label)
-            .ok_or_else(|| "Select an account label first.".to_string())?;
-        let code = generate_totp_for_account(account).map_err(|e| e.to_string())?;
-        self.generated_code = format_totp_code(code, account.digits);
-        Ok(())
-    }
-
-    fn export_backup_file(&mut self) -> Result<(), String> {
-        if self.backup_passphrase.is_empty() {
-            return Err("Backup passphrase is required.".to_string());
-        }
-        export_backup(
-            &self.db_pathbuf(),
-            &PathBuf::from(self.backup_path.clone()),
-            &self.db_passphrase,
-            &self.backup_passphrase,
-        )
-        .map_err(|e| e.to_string())
-    }
-
-    fn import_backup_file(&mut self) -> Result<(), String> {
-        if self.backup_passphrase.is_empty() {
-            return Err("Backup passphrase is required.".to_string());
-        }
-        import_backup(
-            &PathBuf::from(self.backup_path.clone()),
-            &self.db_pathbuf(),
-            &self.backup_passphrase,
-            &self.db_passphrase,
-        )
-        .map_err(|e| e.to_string())?;
-        self.reload_accounts()?;
-        Ok(())
-    }
-
-    fn update_selected_account(&mut self) -> Result<(), String> {
-        if self.selected_label.is_empty() {
-            return Err("Select an account first.".to_string());
-        }
-        if self.edit_label.trim().is_empty() || self.edit_issuer.trim().is_empty() {
-            return Err("Edit issuer and label are required.".to_string());
-        }
-
-        let period_seconds = self
-            .edit_period
-            .trim()
-            .parse::<u32>()
-            .map_err(|_| "Period must be a positive number (seconds).".to_string())?;
-        let digits = self
-            .edit_digits
-            .trim()
-            .parse::<u8>()
-            .map_err(|_| "Digits must be a number (typically 6 or 8).".to_string())?;
-        validate_period(period_seconds).map_err(|e| e.to_string())?;
-        validate_digits(digits).map_err(|e| e.to_string())?;
-
-        self.reload_accounts()?;
-        let index = self
-            .accounts
-            .iter()
-            .position(|a| a.label == self.selected_label)
-            .ok_or_else(|| "Selected account no longer exists.".to_string())?;
-
+            .position(|a| a.label == orig)
+            .ok_or("Account not found.")?;
         if self
             .accounts
             .iter()
             .enumerate()
-            .any(|(i, a)| i != index && a.label == self.edit_label)
+            .any(|(i, a)| i != idx && a.label == self.ef_label)
         {
-            return Err("Another account already uses this label.".to_string());
+            return Err("Another account already uses this label.".into());
         }
-
-        self.accounts[index].issuer = self.edit_issuer.clone();
-        self.accounts[index].label = self.edit_label.clone();
-        self.accounts[index].algorithm = self.edit_algorithm;
-        self.accounts[index].period_seconds = period_seconds;
-        self.accounts[index].digits = digits;
-        if !self.edit_secret.trim().is_empty() {
-            self.accounts[index].secret = decode_secret(&self.edit_secret).map_err(|e| e.to_string())?;
+        self.accounts[idx].issuer = self.ef_issuer.clone();
+        self.accounts[idx].label = self.ef_label.clone();
+        self.accounts[idx].algorithm = self.ef_algo;
+        self.accounts[idx].period_seconds = self.ef_period;
+        self.accounts[idx].digits = self.ef_digits;
+        self.accounts[idx].category = self.ef_cat.clone();
+        if !self.ef_secret.trim().is_empty() {
+            self.accounts[idx].secret =
+                decode_secret(&self.ef_secret).map_err(|e| e.to_string())?;
         }
-        save_accounts(&self.db_pathbuf(), &self.accounts, &self.db_passphrase).map_err(|e| e.to_string())?;
-        self.selected_label = self.edit_label.clone();
-        self.reload_accounts()?;
+        self.do_save()?;
+        self.sel_label = self.ef_label.clone();
+        self.editing = None;
+        self.do_reload()?;
         Ok(())
     }
 
-    fn delete_selected_account(&mut self) -> Result<(), String> {
-        if self.selected_label.is_empty() {
-            return Err("Select an account first.".to_string());
+    fn do_delete_account(&mut self, label: String) -> Result<(), String> {
+        self.do_reload()?;
+        let before = self.accounts.len();
+        self.accounts.retain(|a| a.label != label);
+        if self.accounts.len() == before {
+            return Err("Account not found.".into());
         }
-        self.reload_accounts()?;
-        let original_len = self.accounts.len();
-        self.accounts.retain(|a| a.label != self.selected_label);
-        if self.accounts.len() == original_len {
-            return Err("Selected account was not found.".to_string());
+        self.do_save()?;
+        if self.sel_label == label {
+            self.sel_label = self
+                .accounts
+                .first()
+                .map(|a| a.label.clone())
+                .unwrap_or_default();
         }
-        save_accounts(&self.db_pathbuf(), &self.accounts, &self.db_passphrase).map_err(|e| e.to_string())?;
-        self.selected_label = self
-            .accounts
-            .first()
-            .map(|a| a.label.clone())
-            .unwrap_or_default();
-        self.sync_edit_fields_from_selection();
+        self.do_reload()?;
         Ok(())
+    }
+
+    fn do_export_backup(&mut self) -> Result<(), String> {
+        if self.bk_pass.is_empty() {
+            return Err("Backup passphrase is required.".into());
+        }
+        export_backup(
+            &self.db_pb(),
+            &PathBuf::from(&self.bk_path),
+            &self.db_pass,
+            &self.bk_pass,
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    fn do_import_backup(&mut self) -> Result<(), String> {
+        if self.bk_pass.is_empty() {
+            return Err("Backup passphrase is required.".into());
+        }
+        import_backup(
+            &PathBuf::from(&self.bk_path),
+            &self.db_pb(),
+            &self.bk_pass,
+            &self.db_pass,
+        )
+        .map_err(|e| e.to_string())?;
+        self.do_reload()
     }
 
     fn keychain_entry(&self) -> Result<Entry, String> {
         if self.db_path.trim().is_empty() {
-            return Err("Database file path is required.".to_string());
+            return Err("Database path is required.".into());
         }
-        Ok(Entry::new("custom2fa.desktop", &self.db_path).map_err(|e| e.to_string())?)
+        Entry::new("custom2fa.desktop", &self.db_path).map_err(|e| e.to_string())
     }
 
-    fn save_passphrase_to_keychain(&mut self) -> Result<(), String> {
-        if self.db_passphrase.is_empty() {
-            return Err("Database passphrase is required.".to_string());
+    fn do_save_keychain(&mut self) -> Result<(), String> {
+        if self.db_pass.is_empty() {
+            return Err("Passphrase is required.".into());
         }
-        let entry = self.keychain_entry()?;
-        entry
-            .set_password(&self.db_passphrase)
+        self.keychain_entry()?
+            .set_password(&self.db_pass)
             .map_err(|e| e.to_string())
     }
 
-    fn load_passphrase_from_keychain(&mut self) -> Result<(), String> {
-        let entry = self.keychain_entry()?;
-        self.db_passphrase = entry.get_password().map_err(|e| e.to_string())?;
+    fn do_load_keychain(&mut self) -> Result<(), String> {
+        self.db_pass = self
+            .keychain_entry()?
+            .get_password()
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    fn clear_passphrase_from_keychain(&mut self) -> Result<(), String> {
-        let entry = self.keychain_entry()?;
-        entry.delete_credential().map_err(|e| e.to_string())
+    fn do_clear_keychain(&mut self) -> Result<(), String> {
+        self.keychain_entry()?
+            .delete_credential()
+            .map_err(|e| e.to_string())
     }
 
-    fn run_action<F>(&mut self, action: F)
-    where
-        F: FnOnce(&mut Self) -> Result<(), String>,
-    {
-        match action(self) {
-            Ok(_) => self.status = "Success.".to_string(),
-            Err(e) => self.status = format!("Error: {e}"),
+    fn begin_edit(&mut self, label: &str) {
+        if let Some(a) = self.accounts.iter().find(|a| a.label == label) {
+            self.editing = Some(label.to_string());
+            self.ef_issuer = a.issuer.clone();
+            self.ef_label = a.label.clone();
+            self.ef_secret.clear();
+            self.ef_algo = a.algorithm;
+            self.ef_period = a.period_seconds;
+            self.ef_digits = a.digits;
+            self.ef_cat = a.category.clone();
         }
+    }
+
+    fn lock_vault(&mut self) {
+        self.accounts.clear();
+        self.live_codes.clear();
+        self.accounts_loaded = false;
+        self.db_pass.clear();
+        self.sel_label.clear();
+        self.editing = None;
+        self.del_label = None;
+    }
+
+    // ── Sidebar ──────────────────────────────────────────────────────────────
+    fn show_sidebar(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(12.0);
+        ui.label(RichText::new("Custom2FA").size(22.0).strong().color(C_ACCENT));
+        ui.label(RichText::new("Offline TOTP Manager").small().color(C_MUTED));
+        ui.add_space(6.0);
+
+        if self.accounts_loaded {
+            ui.label(
+                RichText::new(format!("Vault open  ·  {} accounts", self.accounts.len()))
+                    .small()
+                    .color(C_OK),
+            );
+        } else {
+            ui.label(RichText::new("Vault locked").small().color(C_MUTED));
+        }
+
+        ui.separator();
+
+        // Search
+        ui.add(
+            egui::TextEdit::singleline(&mut self.search)
+                .hint_text("Search accounts…")
+                .desired_width(f32::INFINITY),
+        );
+
+        ui.add_space(6.0);
+
+        // Category filter (only when accounts are loaded)
+        if self.accounts_loaded && !self.accounts.is_empty() {
+            let total = self.accounts.len();
+            let cats = self.categories();
+            let none_count = self.accounts.iter().filter(|a| a.category.is_empty()).count();
+
+            if ui
+                .selectable_label(
+                    self.sel_cat.is_empty(),
+                    RichText::new(format!("All  ({total})")).color(C_TEXT),
+                )
+                .clicked()
+            {
+                self.sel_cat.clear();
+                self.panel = Panel::Accounts;
+            }
+
+            for cat in &cats {
+                let n = self.accounts.iter().filter(|a| &a.category == cat).count();
+                let sel = self.sel_cat == *cat;
+                if ui
+                    .selectable_label(
+                        sel,
+                        RichText::new(format!("  {cat}  ({n})")).color(C_TEXT),
+                    )
+                    .clicked()
+                {
+                    self.sel_cat = cat.clone();
+                    self.panel = Panel::Accounts;
+                }
+            }
+
+            if none_count > 0 && !cats.is_empty() {
+                let sel = self.sel_cat == "__none__";
+                if ui
+                    .selectable_label(
+                        sel,
+                        RichText::new(format!("  Uncategorised  ({none_count})")).color(C_MUTED),
+                    )
+                    .clicked()
+                {
+                    self.sel_cat = "__none__".into();
+                    self.panel = Panel::Accounts;
+                }
+            }
+
+            ui.separator();
+        }
+
+        ui.add_space(4.0);
+
+        // Nav buttons
+        for (p, label, color) in [
+            (Panel::Accounts, "Accounts", C_TEXT),
+            (Panel::Add, "+ Add / Import", C_ACCENT),
+            (Panel::Backup, "Backup / Restore", C_TEXT),
+            (Panel::Settings, "Settings", C_TEXT),
+        ] {
+            if ui
+                .selectable_label(self.panel == p, RichText::new(label).color(color))
+                .clicked()
+            {
+                self.panel = p;
+            }
+        }
+
+        // Lock button pinned to bottom
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+            ui.add_space(8.0);
+            if self.accounts_loaded
+                && ui
+                    .button(RichText::new("Lock Vault").color(C_ERR))
+                    .clicked()
+            {
+                self.lock_vault();
+                self.set_ok("Vault locked.");
+            }
+            ui.separator();
+        });
+    }
+
+    // ── Accounts panel ───────────────────────────────────────────────────────
+    fn show_accounts_panel(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        if !self.accounts_loaded {
+            ui.vertical_centered(|ui| {
+                ui.add_space(80.0);
+                ui.label(
+                    RichText::new("Vault is locked")
+                        .size(18.0)
+                        .color(C_MUTED),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new("Open Settings to load your database.")
+                        .color(C_MUTED),
+                );
+                ui.add_space(16.0);
+                if ui.button("Open Settings").clicked() {
+                    self.panel = Panel::Settings;
+                }
+            });
+            return;
+        }
+
+        let labels = self.filtered_labels();
+        if labels.is_empty() {
+            ui.vertical_centered(|ui| {
+                ui.add_space(80.0);
+                ui.label(RichText::new("No accounts match your filter.").color(C_MUTED));
+            });
+            return;
+        }
+
+        // Collect display data — borrows nothing from self after this point
+        let cards: Vec<CardData> = labels
+            .iter()
+            .filter_map(|lbl| {
+                let acc = self.accounts.iter().find(|a| &a.label == lbl)?;
+                let (disp, raw, secs, frac) = self
+                    .live_codes
+                    .get(lbl)
+                    .cloned()
+                    .unwrap_or_else(|| ("------".into(), "------".into(), 0, 0.0));
+                Some(CardData {
+                    issuer: acc.issuer.clone(),
+                    label: acc.label.clone(),
+                    category: acc.category.clone(),
+                    algo: acc.algorithm.to_string(),
+                    digits: acc.digits,
+                    period: acc.period_seconds,
+                    code: disp,
+                    raw_code: raw,
+                    secs,
+                    frac,
+                })
+            })
+            .collect();
+
+        let mut pending: Option<CardAction> = None;
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
+                ui.add_space(8.0);
+                for card in &cards {
+                    show_card(ui, card, &mut pending);
+                    ui.add_space(6.0);
+                }
+                ui.add_space(8.0);
+            });
+
+        match pending {
+            Some(CardAction::Edit(lbl)) => self.begin_edit(&lbl),
+            Some(CardAction::Delete(lbl)) => self.del_label = Some(lbl),
+            Some(CardAction::Copied { label, code }) => {
+                ctx.copy_text(code);
+                self.set_ok(format!("Code for \"{label}\" copied to clipboard."));
+            }
+            None => {}
+        }
+    }
+
+    // ── Add / Import panel ───────────────────────────────────────────────────
+    fn show_add_panel(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+        ui.label(RichText::new("Add / Import Account").size(18.0).strong().color(C_ACCENT));
+        ui.add_space(8.0);
+
+        // Tab bar
+        ui.horizontal(|ui| {
+            for (tab, label) in [
+                (AddTab::Manual, "Manual Secret"),
+                (AddTab::Uri, "OTP URI"),
+                (AddTab::QrImage, "QR Image"),
+                (AddTab::Camera, "Camera"),
+            ] {
+                let sel = self.add_tab == tab;
+                let txt = if sel {
+                    RichText::new(label).color(C_ACCENT).strong()
+                } else {
+                    RichText::new(label).color(C_MUTED)
+                };
+                if ui.selectable_label(sel, txt).clicked() {
+                    self.add_tab = tab;
+                }
+            }
+        });
+
+        ui.separator();
+        ui.add_space(8.0);
+
+        match self.add_tab {
+            AddTab::Manual => {
+                form_row(ui, "Issuer", &mut self.af_issuer, false);
+                form_row(ui, "Label", &mut self.af_label, false);
+                form_row(ui, "Base32 secret", &mut self.af_secret, false);
+                form_row(ui, "Category (optional)", &mut self.af_cat, false);
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Algorithm").color(C_MUTED).small());
+                    ui.add_space(4.0);
+                    algo_combo(ui, "af_algo", &mut self.af_algo);
+                });
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Period").color(C_MUTED).small());
+                    ui.add_space(4.0);
+                    period_combo(ui, "af_period", &mut self.af_period);
+                });
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Digits").color(C_MUTED).small());
+                    ui.add_space(4.0);
+                    digits_combo(ui, "af_digits", &mut self.af_digits);
+                });
+                ui.add_space(12.0);
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("Add Account").color(C_ACCENT))
+                            .min_size([200.0, 32.0].into()),
+                    )
+                    .clicked()
+                {
+                    self.exec("Account added.", |s| s.do_add_manual());
+                }
+            }
+            AddTab::Uri => {
+                ui.label(RichText::new("Paste the full otpauth://totp/… URI:").color(C_MUTED));
+                ui.add_space(4.0);
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.if_uri)
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(3)
+                        .hint_text("otpauth://totp/Label?secret=…&issuer=…"),
+                );
+                ui.add_space(8.0);
+                if ui
+                    .add(
+                        egui::Button::new("Import URI").min_size([200.0, 32.0].into()),
+                    )
+                    .clicked()
+                {
+                    self.exec("Account imported from URI.", |s| s.do_import_uri());
+                }
+            }
+            AddTab::QrImage => {
+                ui.label(RichText::new("Full path to a PNG or JPG QR code image:").color(C_MUTED));
+                ui.add_space(4.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.if_qr)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("C:\\Users\\you\\qr.png  or  /home/you/qr.png"),
+                );
+                ui.label(
+                    RichText::new("Surrounding quotes are stripped automatically.")
+                        .small()
+                        .color(C_MUTED),
+                );
+                ui.add_space(8.0);
+                if ui
+                    .add(egui::Button::new("Import QR Image").min_size([200.0, 32.0].into()))
+                    .clicked()
+                {
+                    self.exec("Account imported from QR image.", |s| s.do_import_qr());
+                }
+            }
+            AddTab::Camera => {
+                ui.label(
+                    RichText::new("Show the QR code to your webcam, then click Scan.")
+                        .color(C_MUTED),
+                );
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Camera index").color(C_MUTED).small());
+                    ui.add_space(4.0);
+                    ui.add(egui::TextEdit::singleline(&mut self.if_cam).desired_width(60.0));
+                    ui.label(RichText::new("(0 = first camera)").small().color(C_MUTED));
+                });
+                ui.add_space(8.0);
+                if ui
+                    .add(
+                        egui::Button::new("Scan QR From Camera").min_size([200.0, 32.0].into()),
+                    )
+                    .clicked()
+                {
+                    self.exec("Account imported from camera.", |s| s.do_import_camera());
+                }
+            }
+        }
+    }
+
+    // ── Backup panel ─────────────────────────────────────────────────────────
+    fn show_backup_panel(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+        ui.label(RichText::new("Backup / Restore").size(18.0).strong().color(C_ACCENT));
+        ui.add_space(12.0);
+
+        ui.label(RichText::new("Backup file path:").color(C_MUTED).small());
+        ui.add(
+            egui::TextEdit::singleline(&mut self.bk_path)
+                .desired_width(f32::INFINITY)
+                .hint_text("backup-2fa.json"),
+        );
+        ui.add_space(8.0);
+        ui.label(
+            RichText::new("Backup passphrase (separate from your vault passphrase):")
+                .color(C_MUTED)
+                .small(),
+        );
+        ui.add(
+            egui::TextEdit::singleline(&mut self.bk_pass)
+                .password(true)
+                .desired_width(f32::INFINITY)
+                .hint_text("Enter a backup passphrase…"),
+        );
+        ui.add_space(14.0);
+
+        ui.horizontal(|ui| {
+            if ui
+                .add(egui::Button::new("Export Backup").min_size([170.0, 32.0].into()))
+                .clicked()
+            {
+                self.exec("Backup exported successfully.", |s| s.do_export_backup());
+            }
+            ui.add_space(8.0);
+            if ui
+                .add(egui::Button::new("Import Backup").min_size([170.0, 32.0].into()))
+                .clicked()
+            {
+                self.exec("Backup imported and re-encrypted.", |s| s.do_import_backup());
+            }
+        });
+
+        ui.add_space(20.0);
+        ui.separator();
+        ui.add_space(8.0);
+        ui.label(RichText::new("Notes").strong().color(C_ACCENT));
+        ui.add_space(4.0);
+        ui.label("The backup file is independently encrypted with the backup passphrase.");
+        ui.label("Store backups in a location separate from your primary device.");
+        ui.label("If you lose both the vault and the backup, accounts cannot be recovered.");
+    }
+
+    // ── Settings panel ───────────────────────────────────────────────────────
+    fn show_settings_panel(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+        ui.label(RichText::new("Settings").size(18.0).strong().color(C_ACCENT));
+        ui.add_space(14.0);
+
+        ui.label(RichText::new("Database file path:").color(C_MUTED).small());
+        ui.add(
+            egui::TextEdit::singleline(&mut self.db_path)
+                .desired_width(f32::INFINITY)
+                .hint_text("accounts.c2fa"),
+        );
+        ui.add_space(8.0);
+
+        ui.label(RichText::new("Database passphrase:").color(C_MUTED).small());
+        ui.add(
+            egui::TextEdit::singleline(&mut self.db_pass)
+                .password(true)
+                .desired_width(f32::INFINITY)
+                .hint_text("Enter passphrase…"),
+        );
+        ui.add_space(12.0);
+
+        // OS keychain
+        ui.label(RichText::new("OS Keychain (optional):").color(C_MUTED).small());
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if ui.button("Save to keychain").clicked() {
+                self.exec("Passphrase saved to OS keychain.", |s| s.do_save_keychain());
+            }
+            if ui.button("Load from keychain").clicked() {
+                self.exec("Passphrase loaded from OS keychain.", |s| {
+                    s.do_load_keychain()
+                });
+            }
+            if ui.button("Clear keychain entry").clicked() {
+                self.exec("Keychain entry cleared.", |s| s.do_clear_keychain());
+            }
+        });
+
+        ui.add_space(14.0);
+        ui.separator();
+        ui.add_space(12.0);
+
+        if ui
+            .add(
+                egui::Button::new(RichText::new("Load Accounts").color(C_ACCENT))
+                    .min_size([f32::INFINITY, 34.0].into()),
+            )
+            .clicked()
+        {
+            self.exec("Vault loaded.", |s| s.do_reload());
+            if self.accounts_loaded {
+                self.panel = Panel::Accounts;
+            }
+        }
+
+        if self.accounts_loaded {
+            ui.add_space(6.0);
+            if ui
+                .add(
+                    egui::Button::new(RichText::new("Lock Vault").color(C_ERR))
+                        .min_size([f32::INFINITY, 34.0].into()),
+                )
+                .clicked()
+            {
+                self.lock_vault();
+                self.set_ok("Vault locked.");
+            }
+        }
+
+        ui.add_space(20.0);
+        ui.separator();
+        ui.add_space(8.0);
+        ui.label(RichText::new("Notes").strong().color(C_ACCENT));
+        ui.add_space(4.0);
+        ui.label("The passphrase is only held in memory — never written to disk in plaintext.");
+        ui.label("The OS keychain entry is stored per-user and does not sync across machines.");
+        ui.label("To use an existing vault from another machine, copy the .c2fa file here.");
+    }
+
+    // ── Edit account window ──────────────────────────────────────────────────
+    fn show_edit_window(&mut self, ctx: &egui::Context) {
+        if self.editing.is_none() {
+            return;
+        }
+
+        let mut do_save = false;
+        let mut do_cancel = false;
+
+        egui::Window::new("Edit Account")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_min_width(400.0);
+                form_row(ui, "Issuer", &mut self.ef_issuer, false);
+                form_row(ui, "Label", &mut self.ef_label, false);
+                form_row(ui, "Category", &mut self.ef_cat, false);
+                ui.add_space(2.0);
+                ui.label(
+                    RichText::new("New Base32 secret (leave blank to keep existing):")
+                        .small()
+                        .color(C_MUTED),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.ef_secret)
+                        .hint_text("Leave blank to keep current secret")
+                        .desired_width(f32::INFINITY),
+                );
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Algorithm").color(C_MUTED).small());
+                    ui.add_space(4.0);
+                    algo_combo(ui, "ef_algo", &mut self.ef_algo);
+                });
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Period").color(C_MUTED).small());
+                    ui.add_space(4.0);
+                    period_combo(ui, "ef_period", &mut self.ef_period);
+                });
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Digits").color(C_MUTED).small());
+                    ui.add_space(4.0);
+                    digits_combo(ui, "ef_digits", &mut self.ef_digits);
+                });
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(egui::Button::new("Save Changes").min_size([150.0, 30.0].into()))
+                        .clicked()
+                    {
+                        do_save = true;
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("Cancel").color(C_MUTED))
+                                .min_size([80.0, 30.0].into()),
+                        )
+                        .clicked()
+                    {
+                        do_cancel = true;
+                    }
+                });
+            });
+
+        if do_save {
+            self.exec("Account updated.", |s| s.do_update_account());
+        } else if do_cancel {
+            self.editing = None;
+        }
+    }
+
+    // ── Delete confirmation window ───────────────────────────────────────────
+    fn show_delete_confirm(&mut self, ctx: &egui::Context) {
+        let label = match self.del_label.clone() {
+            Some(l) => l,
+            None => return,
+        };
+
+        let mut do_delete = false;
+        let mut do_cancel = false;
+
+        egui::Window::new("Confirm Delete")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_min_width(320.0);
+                ui.label(RichText::new("Delete account?").size(16.0).strong());
+                ui.add_space(6.0);
+                ui.label(RichText::new(format!("\"{}\"", label)).color(C_TEXT));
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("This cannot be undone.")
+                        .small()
+                        .color(C_ERR),
+                );
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("Delete").color(C_ERR))
+                                .min_size([120.0, 30.0].into()),
+                        )
+                        .clicked()
+                    {
+                        do_delete = true;
+                    }
+                    if ui
+                        .add(egui::Button::new("Cancel").min_size([80.0, 30.0].into()))
+                        .clicked()
+                    {
+                        do_cancel = true;
+                    }
+                });
+            });
+
+        if do_delete {
+            self.del_label = None;
+            self.exec("Account deleted.", |s| s.do_delete_account(label));
+        } else if do_cancel {
+            self.del_label = None;
+        }
+    }
+
+    // ── Status bar ───────────────────────────────────────────────────────────
+    fn show_status_bar(&self, ui: &mut egui::Ui) {
+        if self.status.is_empty() {
+            ui.label(RichText::new(" ").small());
+            return;
+        }
+        let (icon, color) = if self.is_err {
+            ("⚠  ", C_ERR)
+        } else {
+            ("✔  ", C_OK)
+        };
+        ui.label(RichText::new(format!("{icon}{}", self.status)).small().color(color));
     }
 }
 
+// ── Free helper functions ─────────────────────────────────────────────────────
+
+/// Render a single account card. Uses `pending` to report user actions without
+/// needing access to &mut app state inside the rendering closure.
+fn show_card(ui: &mut egui::Ui, card: &CardData, pending: &mut Option<CardAction>) {
+    let bar_color = if card.secs > 10 {
+        C_OK
+    } else if card.secs > 5 {
+        C_WARN
+    } else {
+        C_ERR
+    };
+
+    let frame = egui::Frame {
+        fill: C_CARD,
+        stroke: Stroke::new(1.0, C_BORDER),
+        corner_radius: egui::CornerRadius::same(8),
+        inner_margin: egui::Margin::same(12),
+        ..Default::default()
+    };
+
+    let avail_w = ui.available_width();
+
+    frame.show(ui, |ui| {
+        ui.set_min_width(avail_w - 2.0);
+
+        ui.horizontal(|ui| {
+            // Left: issuer / label / meta
+            ui.vertical(|ui| {
+                ui.label(
+                    RichText::new(&card.issuer)
+                        .size(15.0)
+                        .strong()
+                        .color(C_ACCENT),
+                );
+                ui.label(RichText::new(&card.label).size(12.0).color(C_TEXT));
+                if !card.category.is_empty() {
+                    ui.label(
+                        RichText::new(format!("  {}", card.category))
+                            .small()
+                            .color(C_MUTED),
+                    );
+                }
+                ui.add_space(2.0);
+                ui.label(
+                    RichText::new(format!(
+                        "{}  ·  {} digits  ·  {}s period",
+                        card.algo, card.digits, card.period
+                    ))
+                    .small()
+                    .color(C_MUTED),
+                );
+            });
+
+            // Right: code + timer + buttons
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // Action buttons
+                ui.vertical(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("Del").color(C_ERR))
+                                .small()
+                                .min_size([44.0, 22.0].into()),
+                        )
+                        .clicked()
+                    {
+                        *pending = Some(CardAction::Delete(card.label.clone()));
+                    }
+                    ui.add_space(2.0);
+                    if ui
+                        .add(egui::Button::new("Edit").small().min_size([44.0, 22.0].into()))
+                        .clicked()
+                    {
+                        *pending = Some(CardAction::Edit(card.label.clone()));
+                    }
+                });
+
+                ui.add_space(10.0);
+
+                // Code display + progress
+                ui.vertical(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new(&card.code)
+                                    .monospace()
+                                    .size(26.0)
+                                    .strong()
+                                    .color(Color32::WHITE),
+                            )
+                            .frame(false),
+                        )
+                        .on_hover_text("Click to copy")
+                        .clicked()
+                    {
+                        *pending = Some(CardAction::Copied {
+                            label: card.label.clone(),
+                            code: card.raw_code.clone(),
+                        });
+                    }
+
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::ProgressBar::new(1.0 - card.frac)
+                                .fill(bar_color)
+                                .desired_width(110.0),
+                        );
+                        ui.label(
+                            RichText::new(format!("{}s", card.secs))
+                                .small()
+                                .color(C_MUTED),
+                        );
+                    });
+                });
+            });
+        });
+    });
+}
+
+/// Labelled form row with a full-width text field.
+fn form_row(ui: &mut egui::Ui, label: &str, value: &mut String, password: bool) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(label).small().color(C_MUTED));
+    });
+    ui.add(
+        egui::TextEdit::singleline(value)
+            .desired_width(f32::INFINITY)
+            .password(password),
+    );
+    ui.add_space(2.0);
+}
+
+fn algo_combo(ui: &mut egui::Ui, id: &str, algo: &mut TotpAlgorithm) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(algo.to_string())
+        .show_ui(ui, |ui| {
+            ui.selectable_value(algo, TotpAlgorithm::Sha1, "SHA-1 (default)");
+            ui.selectable_value(algo, TotpAlgorithm::Sha256, "SHA-256");
+            ui.selectable_value(algo, TotpAlgorithm::Sha512, "SHA-512");
+        });
+}
+
+fn period_combo(ui: &mut egui::Ui, id: &str, period: &mut u32) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(format!("{period} seconds"))
+        .show_ui(ui, |ui| {
+            for &p in &[15u32, 30, 60, 90] {
+                ui.selectable_value(period, p, format!("{p} seconds"));
+            }
+        });
+}
+
+fn digits_combo(ui: &mut egui::Ui, id: &str, digits: &mut u8) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(digits.to_string())
+        .show_ui(ui, |ui| {
+            for &d in &[6u8, 7, 8] {
+                ui.selectable_value(digits, d, format!("{d} digits"));
+            }
+        });
+}
+
+// ── eframe::App ───────────────────────────────────────────────────────────────
 impl eframe::App for Custom2faApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.ensure_defaults();
+        // Refresh codes at ~4 fps (smooth countdown)
+        ctx.request_repaint_after(Duration::from_millis(250));
+        if self.accounts_loaded {
+            self.refresh_live_codes();
+        }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Custom2FA Hub");
-            ui.label("Offline TOTP manager with encrypted local storage.");
+        // Modal windows (drawn before panels so they appear on top)
+        if self.editing.is_some() {
+            self.show_edit_window(ctx);
+        }
+        if self.del_label.is_some() {
+            self.show_delete_confirm(ctx);
+        }
 
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.label("Database file");
-                ui.text_edit_singleline(&mut self.db_path);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Database passphrase");
-                ui.add(egui::TextEdit::singleline(&mut self.db_passphrase).password(true));
-            });
-            ui.horizontal(|ui| {
-                if ui.button("Save passphrase to OS keychain").clicked() {
-                    self.run_action(|s| s.save_passphrase_to_keychain());
-                }
-                if ui.button("Load passphrase from OS keychain").clicked() {
-                    self.run_action(|s| s.load_passphrase_from_keychain());
-                }
-                if ui.button("Clear keychain entry").clicked() {
-                    self.run_action(|s| s.clear_passphrase_from_keychain());
-                }
-            });
-            if ui.button("Load Accounts").clicked() {
-                self.run_action(|s| s.reload_accounts());
-            }
-
-            ui.separator();
-            ui.heading("Add account from manual secret");
-            ui.horizontal(|ui| {
-                ui.label("Issuer");
-                ui.text_edit_singleline(&mut self.issuer);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Label");
-                ui.text_edit_singleline(&mut self.label);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Base32 secret");
-                ui.text_edit_singleline(&mut self.secret);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Algorithm");
-                egui::ComboBox::from_id_source("add_algo")
-                    .selected_text(format!("{}", self.add_algorithm))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.add_algorithm, TotpAlgorithm::Sha1, "SHA1");
-                        ui.selectable_value(&mut self.add_algorithm, TotpAlgorithm::Sha256, "SHA256");
-                        ui.selectable_value(&mut self.add_algorithm, TotpAlgorithm::Sha512, "SHA512");
-                    });
-            });
-            ui.horizontal(|ui| {
-                ui.label("Period (seconds)");
-                ui.text_edit_singleline(&mut self.add_period);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Digits");
-                ui.text_edit_singleline(&mut self.add_digits);
-            });
-            if ui.button("Add Manual Account").clicked() {
-                self.run_action(|s| s.add_manual());
-            }
-
-            ui.separator();
-            ui.heading("Import account");
-            ui.horizontal(|ui| {
-                ui.label("OTP URI");
-                ui.text_edit_singleline(&mut self.uri);
-            });
-            if ui.button("Import OTP URI").clicked() {
-                self.run_action(|s| s.import_uri());
-            }
-
-            ui.horizontal(|ui| {
-                ui.label("QR image path");
-                ui.text_edit_singleline(&mut self.qr_image_path);
-            });
-            if ui.button("Import QR Image").clicked() {
-                self.run_action(|s| s.import_qr());
-            }
-            ui.label("Tip: paste path without quotes, or quotes are auto-trimmed.");
-            ui.horizontal(|ui| {
-                ui.label("Camera index");
-                ui.text_edit_singleline(&mut self.camera_index);
-                if ui.button("Scan QR From Camera (one frame)").clicked() {
-                    self.run_action(|s| s.import_qr_from_camera());
-                }
+        // Status bar (bottom)
+        egui::TopBottomPanel::bottom("status_bar")
+            .min_height(26.0)
+            .show(ctx, |ui| {
+                ui.add_space(3.0);
+                self.show_status_bar(ui);
             });
 
-            ui.separator();
-            ui.heading("Generate code");
-            if self.accounts.is_empty() {
-                ui.label("No loaded accounts.");
-            } else {
-                ui.horizontal(|ui| {
-                    ui.label("Search");
-                    ui.text_edit_singleline(&mut self.search_term);
+        // Left sidebar
+        egui::SidePanel::left("sidebar")
+            .min_width(210.0)
+            .max_width(270.0)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    self.show_sidebar(ui);
                 });
-                let filtered: Vec<(String, String)> = self
-                    .filtered_accounts()
-                    .into_iter()
-                    .map(|a| (a.label.clone(), a.issuer.clone()))
-                    .collect();
-                egui::ComboBox::from_label("Account label")
-                    .selected_text(if self.selected_label.is_empty() {
-                        "Select label".to_string()
-                    } else {
-                        self.selected_label.clone()
-                    })
-                    .show_ui(ui, |ui| {
-                        for (label, issuer) in filtered {
-                            ui.selectable_value(
-                                &mut self.selected_label,
-                                label.clone(),
-                                format!("{label} ({issuer})"),
-                            );
-                        }
-                    });
-                if ui.button("Load Selected Into Editor").clicked() {
-                    self.sync_edit_fields_from_selection();
-                }
-            }
-            if ui.button("Generate Current Code").clicked() {
-                self.run_action(|s| s.generate_current_code());
-            }
-            if ui.button("Copy Code").clicked() {
-                if self.generated_code.is_empty() {
-                    self.status = "No code to copy. Generate a code first.".to_string();
-                } else {
-                    ui.ctx().copy_text(self.generated_code.clone());
-                    self.status = "Copied current code to clipboard.".to_string();
-                }
-            }
-            if !self.generated_code.is_empty() {
-                ui.label(format!("Current code: {}", self.generated_code));
-            }
-
-            ui.separator();
-            ui.heading("Manage selected account");
-            ui.horizontal(|ui| {
-                ui.label("Edit issuer");
-                ui.text_edit_singleline(&mut self.edit_issuer);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Edit label");
-                ui.text_edit_singleline(&mut self.edit_label);
-            });
-            ui.horizontal(|ui| {
-                ui.label("New base32 secret (optional)");
-                ui.text_edit_singleline(&mut self.edit_secret);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Algorithm");
-                egui::ComboBox::from_id_source("edit_algo")
-                    .selected_text(format!("{}", self.edit_algorithm))
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut self.edit_algorithm, TotpAlgorithm::Sha1, "SHA1");
-                        ui.selectable_value(&mut self.edit_algorithm, TotpAlgorithm::Sha256, "SHA256");
-                        ui.selectable_value(&mut self.edit_algorithm, TotpAlgorithm::Sha512, "SHA512");
-                    });
-            });
-            ui.horizontal(|ui| {
-                ui.label("Period (seconds)");
-                ui.text_edit_singleline(&mut self.edit_period);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Digits");
-                ui.text_edit_singleline(&mut self.edit_digits);
-            });
-            ui.horizontal(|ui| {
-                if ui.button("Update Selected Account").clicked() {
-                    self.run_action(|s| s.update_selected_account());
-                }
-                if ui.button("Delete Selected Account").clicked() {
-                    self.run_action(|s| s.delete_selected_account());
-                }
             });
 
-            ui.separator();
-            ui.heading("Backup");
-            ui.horizontal(|ui| {
-                ui.label("Backup file");
-                ui.text_edit_singleline(&mut self.backup_path);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Backup passphrase");
-                ui.add(egui::TextEdit::singleline(&mut self.backup_passphrase).password(true));
-            });
-            ui.horizontal(|ui| {
-                if ui.button("Export Backup").clicked() {
-                    self.run_action(|s| s.export_backup_file());
-                }
-                if ui.button("Import Backup").clicked() {
-                    self.run_action(|s| s.import_backup_file());
-                }
-            });
-
-            ui.separator();
-            ui.label(format!("Status: {}", self.status));
+        // Main content
+        egui::CentralPanel::default().show(ctx, |ui| {
+            match self.panel {
+                Panel::Accounts => self.show_accounts_panel(ui, ctx),
+                Panel::Add => self.show_add_panel(ui),
+                Panel::Backup => self.show_backup_panel(ui),
+                Panel::Settings => self.show_settings_panel(ui),
+            }
         });
     }
+}
+
+// ── Entry point ───────────────────────────────────────────────────────────────
+fn main() -> eframe::Result<()> {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("Custom2FA")
+            .with_inner_size([980.0, 700.0])
+            .with_min_inner_size([720.0, 520.0]),
+        ..Default::default()
+    };
+    eframe::run_native(
+        "Custom2FA",
+        options,
+        Box::new(|cc| {
+            cc.egui_ctx.set_visuals(build_visuals());
+            Ok(Box::<Custom2faApp>::default())
+        }),
+    )
 }

@@ -142,6 +142,7 @@ fn main() {
                 algorithm: algorithm_parsed,
                 period_seconds,
                 digits: digits_val,
+                category: String::new(),
             });
 
             if let Err(e) = save_accounts(&args.db, &accounts, &passphrase) {

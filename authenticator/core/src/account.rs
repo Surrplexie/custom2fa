@@ -36,6 +36,10 @@ pub struct Account {
     pub period_seconds: u32,
     #[serde(default = "default_digits")]
     pub digits: u8,
+    /// Optional user-defined category / group label.
+    /// Stored with the vault; omitted from JSON when empty (backwards-compatible).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub category: String,
 }
 
 fn default_period_seconds() -> u32 {

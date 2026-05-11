@@ -30,12 +30,13 @@ An offline-first, cross-platform **TOTP authenticator** built in Rust. Generates
 - **TOTP generation** — RFC 6238 compliant; supports SHA-1, SHA-256, and SHA-512; configurable period and digit count (defaults: SHA-1, 30 s, 6 digits)
 - **Fully offline** — no internet connection required for code generation
 - **Encrypted vault** — accounts stored in an `*.c2fa` file encrypted with AES-256-GCM + PBKDF2
-- **Desktop GUI** — built with [egui](https://github.com/emilk/egui); runs natively on Windows and Linux
+- **Modern desktop GUI** — dark theme, sidebar navigation, live-refresh account cards with countdown timers, category grouping, search filter, one-click copy
 - **CLI** — scriptable terminal interface for automation and headless environments
 - **OTP URI import** — paste any `otpauth://totp/…` URI
 - **QR import** — decode from an image file (PNG/JPG) or a single webcam frame (desktop)
 - **Encrypted backup** — export/import with a separate backup passphrase; re-encrypts into your current vault passphrase on import
 - **OS keychain integration** — optional passphrase storage via Windows Credential Manager (desktop)
+- **Account categories** — organise accounts into named groups; filterable in the sidebar
 - **Memory-safe** — implemented entirely in Rust; no plaintext secrets written to disk inside the vault
 
 ---
@@ -133,18 +134,59 @@ cargo test --workspace
 
 ## Desktop Hub — Usage
 
+### Interface overview
+
+The window is divided into a **left sidebar** and a **main content area**.
+
+**Left sidebar:**
+
+- App title and vault status (open / locked)
+- **Search box** — filters the account list in real time across issuer, label, and category
+- **Category list** — click any category (or "All") to filter the main view; categories come from each account's assigned group
+- **Navigation buttons** — Accounts · Add/Import · Backup/Restore · Settings
+- **Lock Vault** button at the bottom — clears all decrypted data from memory
+
+**Main area — Accounts view:**
+
+Each account is displayed as a card showing:
+- **Issuer** (bold, coloured) and **label**
+- **Category** if set
+- **Algorithm · digits · period** metadata
+- **Live TOTP code** — click the code directly to copy it to the clipboard
+- **Countdown progress bar** — turns yellow below 10 seconds, red below 5 seconds
+- **Edit** and **Del** buttons — Edit opens a modal dialog; Del shows a confirmation prompt
+
+The codes auto-refresh without any manual action (~4 updates per second for a smooth timer).
+
+### First launch workflow
+
 1. **Launch** `custom2fa_desktop` (or `custom2fa_desktop.exe` on Windows).
-2. **Database file** — enter or browse to the path of your `.c2fa` vault file. The default is `accounts.c2fa` in the current working directory. Use a path outside the repository (e.g., `C:\Users\you\2fa\accounts.c2fa`) to keep personal data away from source control.
-3. **Database passphrase** — enter the master passphrase for that vault. This passphrase is invented by you and is never sent anywhere.
-4. Optionally use **Save passphrase to OS keychain** (Windows Credential Manager) to avoid re-entering it. The stored credential is **local to your user profile** on this machine and does not sync.
-5. Click **Load Accounts** to decrypt the vault and list accounts in the session UI.
-6. **Add accounts** via one of:
-   - **Manual secret** — enter issuer, label, Base32 secret (spaces are stripped automatically), and optionally override algorithm, period, and digits.
-   - **OTP URI** — paste a full `otpauth://totp/…` string.
-   - **QR image path** — full path to a PNG or JPG file (surrounding quotes are trimmed).
-   - **Camera scan** — enter a camera index (e.g., `0`) and click **Scan QR From Camera** for a live single-frame capture.
-7. **Generate code** — select an account label, click **Generate Current Code**. The code respects each account's stored algorithm, period, and digit count.
-8. **Backup** — export an encrypted JSON backup using a separate backup passphrase; store the file offline or on a different device.
+2. Open **Settings** (sidebar).
+3. **Database file** — enter the path to your `.c2fa` vault file. The default is `accounts.c2fa` in the current working directory. Use a path outside the repository to keep personal data away from source control.
+4. **Database passphrase** — enter the master passphrase for that vault. This is invented by you and never sent anywhere.
+5. Optionally click **Save to keychain** (Windows Credential Manager) to avoid re-entering the passphrase on next launch.
+6. Click **Load Accounts** — the vault is decrypted and you are taken to the Accounts view.
+
+### Adding accounts
+
+Open **+ Add / Import** (sidebar) and choose a tab:
+
+| Tab | How to use |
+|-----|-----------|
+| **Manual Secret** | Enter issuer, label, Base32 secret, optional category, then choose algorithm (SHA-1/SHA-256/SHA-512), period (15/30/60/90 s), and digits (6/7/8) from the dropdowns |
+| **OTP URI** | Paste the full `otpauth://totp/…` string |
+| **QR Image** | Paste the full path to a PNG or JPG file (surrounding quotes are stripped automatically) |
+| **Camera** | Enter the camera index (e.g., `0`), then click **Scan QR From Camera** for a single-frame capture |
+
+### Editing and deleting accounts
+
+Click **Edit** on any account card. A modal dialog opens with all fields pre-populated. Leave the secret field blank to keep the existing secret. Click **Save Changes** to commit, or **Cancel** to discard.
+
+Click **Del** to open a confirmation dialog before permanent deletion.
+
+### Backup
+
+Open **Backup / Restore** (sidebar), enter a backup file path and a **separate** backup passphrase, then click **Export Backup**. To restore, provide the same backup file and passphrase and click **Import Backup**.
 
 ---
 
@@ -309,6 +351,8 @@ Detailed guides live in `authenticator/docs/`:
 ---
 
 ## Screenshots
+
+> Screenshots below show an earlier build. The current GUI features a dark sidebar layout, live countdown cards, and category filtering.
 
 ![Screenshot 1](authenticator/docs/images/img%20(1).png)
 
