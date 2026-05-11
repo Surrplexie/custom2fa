@@ -151,7 +151,7 @@ struct Custom2faApp {
 impl Default for Custom2faApp {
     fn default() -> Self {
         Self {
-            db_path: "accounts.c2fa".into(),
+            db_path: "!2fa".into(),
             db_pass: String::new(),
             accounts_loaded: false,
             accounts: Vec::new(),
@@ -935,7 +935,7 @@ impl Custom2faApp {
         ui.add(
             egui::TextEdit::singleline(&mut self.db_path)
                 .desired_width(f32::INFINITY)
-                .hint_text("accounts.c2fa"),
+                .hint_text("!2fa"),
         );
         ui.add_space(8.0);
 
@@ -1173,10 +1173,13 @@ fn show_card(ui: &mut egui::Ui, card: &CardData, pending: &mut Option<CardAction
         ..Default::default()
     };
 
-    let avail_w = ui.available_width();
-
     frame.show(ui, |ui| {
-        ui.set_min_width(avail_w - 2.0);
+        // `ui.available_width()` here is already the *inner* width after
+        // inner_margin (10 px each side) and stroke (1 px each side) are
+        // subtracted by egui's frame layout.  Setting set_min_width to this
+        // value forces the card to fill the available space exactly without
+        // overflowing or leaving a gap.
+        ui.set_min_width(ui.available_width());
 
         // ── Always-visible header row ────────────────────────────────────
         // Left section: chevron + issuer name (expand/collapse toggle).
@@ -1400,13 +1403,96 @@ impl eframe::App for Custom2faApp {
     }
 }
 
+// ── App icon (programmatic, no file required) ─────────────────────────────────
+/// Generates a 64×64 RGBA icon: dark circle with an accent-blue ring border
+/// and a pixelated "2" glyph rendered in a lighter blue at the centre.
+fn app_icon() -> egui::IconData {
+    const S: u32 = 64;
+    let c = S as f32 / 2.0;
+    let r = c - 1.5_f32; // outer radius (leave 1-px breathing room)
+    let ring_w = 9.0_f32; // width of the blue ring border
+
+    // 5-wide × 7-tall bitmap for the digit "2"
+    let glyph: [[u8; 5]; 7] = [
+        [0, 1, 1, 1, 0],
+        [1, 0, 0, 0, 1],
+        [0, 0, 0, 1, 0],
+        [0, 0, 1, 1, 0],
+        [0, 1, 0, 0, 0],
+        [1, 0, 0, 0, 0],
+        [1, 1, 1, 1, 1],
+    ];
+    let scale = 4.2_f32;
+    let gw = 5.0_f32 * scale;
+    let gh = 7.0_f32 * scale;
+    let gx0 = c - gw / 2.0;
+    let gy0 = c - gh / 2.0 + 1.5; // very slight downward nudge
+
+    let mut rgba = vec![0u8; (S * S * 4) as usize];
+
+    for y in 0..S {
+        for x in 0..S {
+            let px = x as f32 + 0.5;
+            let py = y as f32 + 0.5;
+            let dx = px - c;
+            let dy = py - c;
+            let d = (dx * dx + dy * dy).sqrt();
+            let i = ((y * S + x) * 4) as usize;
+
+            if d > r {
+                // soft anti-aliased edge
+                if d <= r + 1.0 {
+                    let t = (r + 1.0 - d).clamp(0.0, 1.0);
+                    rgba[i]     = (26.0 * t) as u8;
+                    rgba[i + 1] = (26.0 * t) as u8;
+                    rgba[i + 2] = (38.0 * t) as u8;
+                    rgba[i + 3] = (255.0 * t) as u8;
+                }
+                continue;
+            }
+
+            if d >= r - ring_w {
+                // accent-blue ring  (#7AA2F7)
+                rgba[i]     = 122;
+                rgba[i + 1] = 162;
+                rgba[i + 2] = 247;
+                rgba[i + 3] = 255;
+            } else {
+                // dark inner background (#1A1A26)
+                rgba[i]     = 26;
+                rgba[i + 1] = 26;
+                rgba[i + 2] = 38;
+                rgba[i + 3] = 255;
+
+                // draw "2" glyph (lighter accent #C0CAF5)
+                let gxi = ((px - gx0) / scale) as isize;
+                let gyi = ((py - gy0) / scale) as isize;
+                if gxi >= 0
+                    && gxi < 5
+                    && gyi >= 0
+                    && gyi < 7
+                    && glyph[gyi as usize][gxi as usize] == 1
+                {
+                    rgba[i]     = 192;
+                    rgba[i + 1] = 202;
+                    rgba[i + 2] = 245;
+                    rgba[i + 3] = 255;
+                }
+            }
+        }
+    }
+
+    egui::IconData { rgba, width: S, height: S }
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Custom2FA")
             .with_inner_size([980.0, 700.0])
-            .with_min_inner_size([720.0, 520.0]),
+            .with_min_inner_size([720.0, 520.0])
+            .with_icon(std::sync::Arc::new(app_icon())),
         ..Default::default()
     };
     eframe::run_native(
