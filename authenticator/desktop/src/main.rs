@@ -2,6 +2,9 @@
 // Dark theme · sidebar · live-refresh codes · countdown timer · categories
 // Offline-first TOTP — no network required for normal use.
 
+// Suppress the Windows console window when launched as a GUI app.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use custom2fa_core::account::{validate_digits, validate_period, Account, TotpAlgorithm};
 use custom2fa_core::otp_uri::{
     parse_otpauth_uri, parse_otpauth_uri_from_luma, parse_otpauth_uri_from_qr_image,
@@ -80,12 +83,14 @@ struct CardData {
     raw_code: String,
     secs: u32,
     frac: f32,
+    expanded: bool,
 }
 
 enum CardAction {
     Edit(String),
     Delete(String),
     Copied { label: String, code: String },
+    Toggle(String),
 }
 
 // ── App state ────────────────────────────────────────────────────────────────
@@ -138,6 +143,9 @@ struct Custom2faApp {
 
     // confirm-delete
     del_label: Option<String>,
+
+    // which account cards are currently expanded
+    expanded_labels: std::collections::HashSet<String>,
 }
 
 impl Default for Custom2faApp {
@@ -183,6 +191,8 @@ impl Default for Custom2faApp {
             is_err: false,
 
             del_label: None,
+
+            expanded_labels: std::collections::HashSet::new(),
         }
     }
 }
@@ -700,6 +710,7 @@ impl Custom2faApp {
                     raw_code: raw,
                     secs,
                     frac,
+                    expanded: self.expanded_labels.contains(lbl),
                 })
             })
             .collect();
@@ -723,6 +734,13 @@ impl Custom2faApp {
             Some(CardAction::Copied { label, code }) => {
                 ctx.copy_text(code);
                 self.set_ok(format!("Code for \"{label}\" copied to clipboard."));
+            }
+            Some(CardAction::Toggle(lbl)) => {
+                if self.expanded_labels.contains(&lbl) {
+                    self.expanded_labels.remove(&lbl);
+                } else {
+                    self.expanded_labels.insert(lbl);
+                }
             }
             None => {}
         }
@@ -1132,6 +1150,12 @@ impl Custom2faApp {
 
 /// Render a single account card. Uses `pending` to report user actions without
 /// needing access to &mut app state inside the rendering closure.
+///
+/// Layout (always-visible header):
+///   [▶/▼ ISSUER]  ···spacer···  [123 456]  [████░ Xs]  [Copy]
+///
+/// Expanded section (shown below header when card.expanded == true):
+///   label · category · algo/period/digits meta · [Edit] [Delete]
 fn show_card(ui: &mut egui::Ui, card: &CardData, pending: &mut Option<CardAction>) {
     let bar_color = if card.secs > 10 {
         C_OK
@@ -1145,7 +1169,7 @@ fn show_card(ui: &mut egui::Ui, card: &CardData, pending: &mut Option<CardAction
         fill: C_CARD,
         stroke: Stroke::new(1.0, C_BORDER),
         corner_radius: egui::CornerRadius::same(8),
-        inner_margin: egui::Margin::same(12),
+        inner_margin: egui::Margin::same(10),
         ..Default::default()
     };
 
@@ -1154,96 +1178,135 @@ fn show_card(ui: &mut egui::Ui, card: &CardData, pending: &mut Option<CardAction
     frame.show(ui, |ui| {
         ui.set_min_width(avail_w - 2.0);
 
+        // ── Always-visible header row ────────────────────────────────────
+        // Left section: chevron + issuer name (expand/collapse toggle).
+        // Right section (RTL): [Copy] [timer label] [progress bar] [code].
+        // The code button has an explicit min_size so the text can never
+        // wrap digit-by-digit regardless of layout width.
         ui.horizontal(|ui| {
-            // Left: issuer / label / meta
-            ui.vertical(|ui| {
-                ui.label(
-                    RichText::new(&card.issuer)
-                        .size(15.0)
-                        .strong()
-                        .color(C_ACCENT),
-                );
-                ui.label(RichText::new(&card.label).size(12.0).color(C_TEXT));
-                if !card.category.is_empty() {
-                    ui.label(
-                        RichText::new(format!("  {}", card.category))
-                            .small()
-                            .color(C_MUTED),
-                    );
-                }
-                ui.add_space(2.0);
-                ui.label(
-                    RichText::new(format!(
-                        "{}  ·  {} digits  ·  {}s period",
-                        card.algo, card.digits, card.period
-                    ))
-                    .small()
-                    .color(C_MUTED),
-                );
-            });
+            // Expand / collapse toggle
+            let chevron = if card.expanded { "▼  " } else { "▶  " };
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new(format!("{}{}", chevron, card.issuer))
+                            .size(14.0)
+                            .strong()
+                            .color(C_ACCENT),
+                    )
+                    .frame(false),
+                )
+                .on_hover_text(if card.expanded { "Collapse" } else { "Expand" })
+                .clicked()
+            {
+                *pending = Some(CardAction::Toggle(card.label.clone()));
+            }
 
-            // Right: code + timer + buttons
+            // Right side — RTL so items stack: Copy | Xs | ProgressBar | Code
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // Action buttons
-                ui.vertical(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new("Del").color(C_ERR))
-                                .small()
-                                .min_size([44.0, 22.0].into()),
-                        )
-                        .clicked()
-                    {
-                        *pending = Some(CardAction::Delete(card.label.clone()));
-                    }
-                    ui.add_space(2.0);
-                    if ui
-                        .add(egui::Button::new("Edit").small().min_size([44.0, 22.0].into()))
-                        .clicked()
-                    {
-                        *pending = Some(CardAction::Edit(card.label.clone()));
-                    }
-                });
+                // 1. Copy button (rightmost)
+                if ui
+                    .add(egui::Button::new("Copy").min_size([50.0, 26.0].into()))
+                    .clicked()
+                {
+                    *pending = Some(CardAction::Copied {
+                        label: card.label.clone(),
+                        code: card.raw_code.clone(),
+                    });
+                }
+
+                // 2. Countdown timer label
+                ui.label(
+                    RichText::new(format!("  {}s  ", card.secs))
+                        .small()
+                        .color(C_MUTED),
+                );
+
+                // 3. Progress bar
+                ui.add(
+                    egui::ProgressBar::new(1.0 - card.frac)
+                        .fill(bar_color)
+                        .desired_width(90.0),
+                );
 
                 ui.add_space(10.0);
 
-                // Code display + progress
-                ui.vertical(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new(&card.code)
-                                    .monospace()
-                                    .size(26.0)
-                                    .strong()
-                                    .color(Color32::WHITE),
-                            )
-                            .frame(false),
+                // 4. Code — min_size guarantees the text is never squeezed
+                //    to sub-character width by the surrounding RTL layout.
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new(&card.code)
+                                .monospace()
+                                .size(22.0)
+                                .strong()
+                                .color(Color32::WHITE),
                         )
-                        .on_hover_text("Click to copy")
-                        .clicked()
-                    {
-                        *pending = Some(CardAction::Copied {
-                            label: card.label.clone(),
-                            code: card.raw_code.clone(),
-                        });
-                    }
+                        .frame(false)
+                        .min_size([130.0, 34.0].into()),
+                    )
+                    .on_hover_text("Click to copy")
+                    .clicked()
+                {
+                    *pending = Some(CardAction::Copied {
+                        label: card.label.clone(),
+                        code: card.raw_code.clone(),
+                    });
+                }
+            });
+        });
 
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::ProgressBar::new(1.0 - card.frac)
-                                .fill(bar_color)
-                                .desired_width(110.0),
-                        );
+        // ── Expanded detail section ──────────────────────────────────────
+        if card.expanded {
+            ui.add_space(6.0);
+            ui.separator();
+            ui.add_space(4.0);
+
+            // Indent the detail content slightly
+            ui.horizontal(|ui| {
+                ui.add_space(18.0);
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(&card.label).size(12.0).color(C_TEXT));
+
+                    if !card.category.is_empty() {
                         ui.label(
-                            RichText::new(format!("{}s", card.secs))
+                            RichText::new(format!("Category:  {}", card.category))
                                 .small()
                                 .color(C_MUTED),
                         );
+                    }
+
+                    ui.label(
+                        RichText::new(format!(
+                            "{}  ·  {} digits  ·  {}s period",
+                            card.algo, card.digits, card.period
+                        ))
+                        .small()
+                        .color(C_MUTED),
+                    );
+
+                    ui.add_space(6.0);
+
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add(egui::Button::new("Edit").min_size([72.0, 26.0].into()))
+                            .clicked()
+                        {
+                            *pending = Some(CardAction::Edit(card.label.clone()));
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new("Delete").color(C_ERR))
+                                    .min_size([72.0, 26.0].into()),
+                            )
+                            .clicked()
+                        {
+                            *pending = Some(CardAction::Delete(card.label.clone()));
+                        }
                     });
                 });
             });
-        });
+        }
     });
 }
 
