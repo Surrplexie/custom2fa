@@ -1,3 +1,5 @@
+Dev logs, simple terms; REM-1, REM-2 = major logs entered here, REM-1.2, REM-1.4 etc. GitHub pushing only, not named here.
+
 ## REM-1
 
 * Project creation, temporary and file code creation
