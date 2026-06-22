@@ -5,7 +5,9 @@
 // Suppress the Windows console window when launched as a GUI app.
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use custom2fa_core::account::{validate_digits, validate_period, Account, TotpAlgorithm};
+use custom2fa_core::account::{
+    validate_digits, validate_period, zeroize_accounts, Account, TotpAlgorithm,
+};
 use custom2fa_core::otp_uri::{
     parse_otpauth_uri, parse_otpauth_uri_from_luma, parse_otpauth_uri_from_qr_image,
 };
@@ -19,6 +21,7 @@ use nokhwa::Camera;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use zeroize::Zeroize;
 
 // ── Theme constants ──────────────────────────────────────────────────────────
 const C_PANEL: Color32 = Color32::from_rgb(22, 22, 29);
@@ -356,7 +359,7 @@ impl Custom2faApp {
         self.panel = Panel::Accounts;
         self.af_issuer.clear();
         self.af_label.clear();
-        self.af_secret.clear();
+        self.af_secret.zeroize();
         self.af_algo = TotpAlgorithm::default();
         self.af_period = 30;
         self.af_digits = 6;
@@ -530,7 +533,7 @@ impl Custom2faApp {
             self.editing = Some(label.to_string());
             self.ef_issuer = a.issuer.clone();
             self.ef_label = a.label.clone();
-            self.ef_secret.clear();
+            self.ef_secret.zeroize();
             self.ef_algo = a.algorithm;
             self.ef_period = a.period_seconds;
             self.ef_digits = a.digits;
@@ -538,14 +541,29 @@ impl Custom2faApp {
         }
     }
 
-    fn lock_vault(&mut self) {
+    /// Scrubs decrypted secrets, passphrases, and cached codes from memory.
+    fn zeroize_sensitive_memory(&mut self) {
+        zeroize_accounts(&mut self.accounts);
         self.accounts.clear();
-        self.live_codes.clear();
+
+        for (_, (mut disp, mut raw, _, _)) in self.live_codes.drain() {
+            disp.zeroize();
+            raw.zeroize();
+        }
+
+        self.db_pass.zeroize();
+        self.bk_pass.zeroize();
+        self.af_secret.zeroize();
+        self.ef_secret.zeroize();
+    }
+
+    fn lock_vault(&mut self) {
+        self.zeroize_sensitive_memory();
         self.accounts_loaded = false;
-        self.db_pass.clear();
         self.sel_label.clear();
         self.editing = None;
         self.del_label = None;
+        self.expanded_labels.clear();
     }
 
     // ── Sidebar ──────────────────────────────────────────────────────────────
@@ -1357,7 +1375,17 @@ fn digits_combo(ui: &mut egui::Ui, id: &str, digits: &mut u8) {
 }
 
 // ── eframe::App ───────────────────────────────────────────────────────────────
+impl Drop for Custom2faApp {
+    fn drop(&mut self) {
+        self.zeroize_sensitive_memory();
+    }
+}
+
 impl eframe::App for Custom2faApp {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.zeroize_sensitive_memory();
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Refresh codes at ~4 fps (smooth countdown)
         ctx.request_repaint_after(Duration::from_millis(250));

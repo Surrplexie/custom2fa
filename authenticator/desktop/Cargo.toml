@@ -10,6 +10,7 @@ egui = "0.33"
 keyring = "3.6"
 nokhwa = { version = "0.10", features = ["input-native"] }
 image = "0.25"
+zeroize = "1.8"
 
 [build-dependencies]
 ico = "0.3"

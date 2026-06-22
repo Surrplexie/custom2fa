@@ -41,6 +41,11 @@ Dev logs rules; REM-1, REM-2 any of these terms are the new 'updates' like "Upd
 - CLI: `add` accepts optional `--algorithm`, `--period`, `--digits`; `list` shows parameters per row; `code` formats width to match stored digit count.
 - Desktop hub: manual add and account editor include algorithm selection plus period and digits fields; **Generate Current Code** follows each account’s stored parameters.
 - Workspace crates bumped to **0.2.0** (`custom2fa_core`, `custom2fa_cli`, `custom2fa_desktop`). Release runbook and user guide updated for this cut.
+## REM-6
+- Atomic vault and backup writes: temp file in the same directory, `fsync`, then rename/replace so a crash mid-write cannot corrupt an existing `.c2fa` vault or backup JSON.
+- Added `Account::zeroize_secrets` and `zeroize_accounts` in core for scrubbing decoded TOTP secret bytes from memory.
+- Desktop hub scrubs sensitive memory on **Lock Vault**, **app exit** (`on_exit`), and **Drop**: account secrets, vault/backup passphrases, manual-add/edit secret fields, and cached live TOTP strings.
+- Added storage unit tests for atomic write roundtrip, replace-in-place, and no leftover `.tmp` files after a successful save.
 ## REM-5
 
 ## REM-3

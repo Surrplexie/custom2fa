@@ -1,6 +1,7 @@
 use crate::error::AuthError;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use zeroize::Zeroize;
 
 /// Hash algorithm for RFC 6238 TOTP (`otpauth` URI `algorithm` parameter).
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -57,6 +58,18 @@ impl Account {
         validate_digits(self.digits)?;
         Ok(())
     }
+
+    /// Scrubs the decoded TOTP secret bytes from memory.
+    pub fn zeroize_secrets(&mut self) {
+        self.secret.zeroize();
+    }
+}
+
+/// Scrubs TOTP secret bytes for every account in `accounts`.
+pub fn zeroize_accounts(accounts: &mut [Account]) {
+    for account in accounts.iter_mut() {
+        account.zeroize_secrets();
+    }
 }
 
 pub fn validate_period(period_seconds: u32) -> Result<(), AuthError> {
@@ -71,4 +84,25 @@ pub fn validate_digits(digits: u8) -> Result<(), AuthError> {
         return Err(AuthError::InvalidTotpParameters);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{zeroize_accounts, Account, TotpAlgorithm};
+
+    #[test]
+    fn zeroize_accounts_scrubs_secret_bytes() {
+        let mut accounts = vec![Account {
+            issuer: "Test".into(),
+            label: "user".into(),
+            secret: vec![0xAA, 0xBB, 0xCC],
+            algorithm: TotpAlgorithm::Sha1,
+            period_seconds: 30,
+            digits: 6,
+            category: String::new(),
+        }];
+
+        zeroize_accounts(&mut accounts);
+        assert!(accounts[0].secret.iter().all(|&b| b == 0));
+    }
 }
