@@ -72,6 +72,14 @@ pub fn zeroize_accounts(accounts: &mut [Account]) {
     }
 }
 
+/// Label of the first account whose secret bytes match `secret`.
+pub fn label_for_secret<'a>(accounts: &'a [Account], secret: &[u8]) -> Option<&'a str> {
+    accounts
+        .iter()
+        .find(|account| account.secret == secret)
+        .map(|account| account.label.as_str())
+}
+
 pub fn validate_period(period_seconds: u32) -> Result<(), AuthError> {
     if !(1..=86400).contains(&period_seconds) {
         return Err(AuthError::InvalidTotpParameters);
@@ -88,7 +96,22 @@ pub fn validate_digits(digits: u8) -> Result<(), AuthError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{zeroize_accounts, Account, TotpAlgorithm};
+    use super::{label_for_secret, zeroize_accounts, Account, TotpAlgorithm};
+
+    #[test]
+    fn label_for_secret_finds_matching_account() {
+        let accounts = vec![Account {
+            issuer: "Test".into(),
+            label: "user".into(),
+            secret: vec![1, 2, 3],
+            algorithm: TotpAlgorithm::Sha1,
+            period_seconds: 30,
+            digits: 6,
+            category: String::new(),
+        }];
+        assert_eq!(label_for_secret(&accounts, &[1, 2, 3]), Some("user"));
+        assert_eq!(label_for_secret(&accounts, &[9, 9, 9]), None);
+    }
 
     #[test]
     fn zeroize_accounts_scrubs_secret_bytes() {

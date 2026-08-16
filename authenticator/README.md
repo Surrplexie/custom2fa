@@ -26,6 +26,7 @@ Cross-platform **offline TOTP** tooling: shared Rust **core**, a **CLI**, and a 
 - [x] Encrypted storage (AES-256-GCM + PBKDF2)
 - [x] OTP URI + QR decoding path
 - [x] Desktop hub (egui) — first-party GUI in this workspace
+- [x] Remembered vault path, keychain auto-unlock, idle lock, clipboard timeout
 - [ ] Optional Tauri shell / packaging polish (if desired later)
 - [ ] Mobile apps (iOS + Android)
 

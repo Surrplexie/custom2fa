@@ -37,12 +37,9 @@ fn embed_windows_icon() {
     // ── Write ICO file using the `ico` crate ──────────────────────────────
     let image = ico::IconImage::from_rgba_data(SIZE, SIZE, pixels);
     let mut dir = ico::IconDir::new(ico::ResourceType::Icon);
-    dir.add_entry(
-        ico::IconDirEntry::encode(&image).expect("Failed to encode icon image"),
-    );
+    dir.add_entry(ico::IconDirEntry::encode(&image).expect("Failed to encode icon image"));
     {
-        let file =
-            std::fs::File::create(&ico_path).expect("Failed to create app.ico");
+        let file = std::fs::File::create(&ico_path).expect("Failed to create app.ico");
         let mut buf = std::io::BufWriter::new(file);
         dir.write(&mut buf).expect("Failed to write app.ico");
         buf.flush().expect("Failed to flush app.ico");

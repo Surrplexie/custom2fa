@@ -103,8 +103,12 @@ mod tests {
     #[test]
     fn decrypt_with_wrong_passphrase_fails() {
         let plaintext = b"super secret payload";
-        let encrypted = encrypt(plaintext, "correct-passphrase").expect("encryption should succeed");
+        let encrypted =
+            encrypt(plaintext, "correct-passphrase").expect("encryption should succeed");
         let result = decrypt(&encrypted, "wrong-passphrase");
-        assert!(result.is_err(), "decryption should fail with wrong passphrase");
+        assert!(
+            result.is_err(),
+            "decryption should fail with wrong passphrase"
+        );
     }
 }

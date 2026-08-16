@@ -6,9 +6,9 @@ Use this when preparing a **public or tagged release** of the `authenticator` wo
 
 | Crate | Version | Notes |
 |-------|---------|--------|
-| `custom2fa_core` | 0.2.0 | Full `otpauth` TOTP parameters; RFC 6238 algorithms |
-| `custom2fa_cli` | 0.2.0 | Matches core |
-| `custom2fa_desktop` | 0.2.0 | Matches core |
+| `custom2fa_core` | 0.3.0 | Secret normalize, passphrase rotation, backup merge, atomic replace |
+| `custom2fa_cli` | 0.3.0 | edit / delete / category / watch / change-passphrase / merge import |
+| `custom2fa_desktop` | 0.3.0 | Remembered path, pickers, idle lock, clipboard timeout, hide codes |
 
 Bump all three `version = "..."` fields together when you cut the next SemVer release.
 
@@ -47,9 +47,10 @@ cargo build --workspace --release
 
 **Desktop**
 
-- Launch `custom2fa_desktop.exe`: open DB, **Load Accounts**.
-- Add or select an account that uses **non-default** TOTP settings (e.g. SHA256, 60s period, or 8 digits) if you have a test vault; **Generate Current Code** and **Copy Code**.
-- Confirm manual add: change algorithm / period / digits, save, regenerate code.
+- Launch `custom2fa_desktop.exe`: vault should auto-unlock from the keychain if enabled, or open Settings → Load Accounts.
+- Click a live code to copy; confirm the status line mentions the 30s clipboard timeout.
+- Add or select an account that uses **non-default** TOTP settings (e.g. SHA256, 60s period, or 8 digits); confirm the card shows the right width and countdown.
+- Confirm **Browse…** on Settings / QR / Backup, **Hide codes until clicked**, and **Import Backup** merge vs replace prompt.
 
 **CLI**
 
@@ -68,13 +69,13 @@ cargo build --workspace --release
    - `authenticator/desktop/Cargo.toml`
 2. Append an entry to `authenticator/Dev logs/README.md` with date and highlights.
 3. Adjust [USER_GUIDE.md](USER_GUIDE.md) if behavior or CLI flags changed.
-4. Commit with a clear message, for example: `Release v0.2.0: full otpauth TOTP parameters`.
+4. Commit with a clear message, for example: `Release v0.3.0: desktop QoL, backup merge, passphrase rotation`.
 
 **Optional annotated tag** (from repository root):
 
 ```text
-git tag -a v0.2.0 -m "Release v0.2.0: otpauth algorithm/period/digits + RFC 6238 TOTP"
-git push origin v0.2.0
+git tag -a v0.3.0 -m "Release v0.3.0: remembered vault, file pickers, idle lock, backup merge"
+git push origin v0.3.0
 ```
 
 Use the next SemVer in both `Cargo.toml` files and the tag name.

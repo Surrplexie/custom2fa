@@ -10,10 +10,21 @@ type HmacSha1 = Hmac<Sha1>;
 type HmacSha256 = Hmac<Sha256>;
 type HmacSha512 = Hmac<Sha512>;
 
+/// Strips whitespace, hyphens, and Base32 padding so pasted secrets still decode.
+pub fn normalize_secret_str(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| !c.is_whitespace() && *c != '-' && *c != '=')
+        .collect::<String>()
+        .to_ascii_uppercase()
+}
+
 /// Converts a Base32 string (from Google/Amazon) into raw bytes.
 pub fn decode_secret(base32_secret: &str) -> Result<Vec<u8>, AuthError> {
-    decode(Alphabet::RFC4648 { padding: false }, &base32_secret.to_uppercase())
-        .ok_or(AuthError::InvalidSecret)
+    let normalized = normalize_secret_str(base32_secret);
+    if normalized.is_empty() {
+        return Err(AuthError::InvalidSecret);
+    }
+    decode(Alphabet::RFC4648 { padding: false }, &normalized).ok_or(AuthError::InvalidSecret)
 }
 
 /// Unix timestep counter: floor(epoch_seconds / period_seconds).
@@ -36,11 +47,10 @@ pub fn current_timestep() -> u64 {
 
 fn dynamic_truncation(hmac_result: &[u8]) -> u32 {
     let offset = (hmac_result[hmac_result.len() - 1] & 0x0f) as usize;
-    let code = ((u32::from(hmac_result[offset]) & 0x7f) << 24)
+    ((u32::from(hmac_result[offset]) & 0x7f) << 24)
         | (u32::from(hmac_result[offset + 1]) << 16)
         | (u32::from(hmac_result[offset + 2]) << 8)
-        | u32::from(hmac_result[offset + 3]);
-    code
+        | u32::from(hmac_result[offset + 3])
 }
 
 fn hmac_otp(secret: &[u8], timestep: u64, algorithm: TotpAlgorithm) -> Result<Vec<u8>, AuthError> {
@@ -52,12 +62,14 @@ fn hmac_otp(secret: &[u8], timestep: u64, algorithm: TotpAlgorithm) -> Result<Ve
             Ok(mac.finalize().into_bytes().to_vec())
         }
         TotpAlgorithm::Sha256 => {
-            let mut mac = HmacSha256::new_from_slice(secret).map_err(|_| AuthError::InvalidSecret)?;
+            let mut mac =
+                HmacSha256::new_from_slice(secret).map_err(|_| AuthError::InvalidSecret)?;
             mac.update(&counter);
             Ok(mac.finalize().into_bytes().to_vec())
         }
         TotpAlgorithm::Sha512 => {
-            let mut mac = HmacSha512::new_from_slice(secret).map_err(|_| AuthError::InvalidSecret)?;
+            let mut mac =
+                HmacSha512::new_from_slice(secret).map_err(|_| AuthError::InvalidSecret)?;
             mac.update(&counter);
             Ok(mac.finalize().into_bytes().to_vec())
         }
@@ -68,12 +80,7 @@ fn hmac_otp(secret: &[u8], timestep: u64, algorithm: TotpAlgorithm) -> Result<Ve
 pub fn generate_totp_for_account(account: &Account) -> Result<u32, AuthError> {
     account.validate_totp_parameters()?;
     let ts = current_timestep_for_period(account.period_seconds)?;
-    generate_totp(
-        &account.secret,
-        ts,
-        account.digits,
-        account.algorithm,
-    )
+    generate_totp(&account.secret, ts, account.digits, account.algorithm)
 }
 
 /// Format a numeric TOTP code with fixed width (leading zeros).
@@ -130,5 +137,24 @@ mod tests {
     fn invalid_digits_rejected() {
         let err = generate_totp(&rfc_secret_bytes(), 1, 3, TotpAlgorithm::Sha1);
         assert!(matches!(err, Err(AuthError::InvalidTotpParameters)));
+    }
+
+    #[test]
+    fn decode_secret_strips_spaces_hyphens_and_padding() {
+        let compact = decode_secret("JBSWY3DPEHPK3PXP").unwrap();
+        let spaced = decode_secret("jbsw y3dp ehpk 3pxp").unwrap();
+        let hyphenated = decode_secret("JBSW-Y3DP-EHPK-3PXP").unwrap();
+        let padded = decode_secret("JBSWY3DPEHPK3PXP=").unwrap();
+        assert_eq!(compact, spaced);
+        assert_eq!(compact, hyphenated);
+        assert_eq!(compact, padded);
+    }
+
+    #[test]
+    fn decode_secret_rejects_empty_after_normalize() {
+        assert!(matches!(
+            decode_secret(" - = \t"),
+            Err(AuthError::InvalidSecret)
+        ));
     }
 }

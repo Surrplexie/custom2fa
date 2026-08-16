@@ -5,22 +5,26 @@
 // Suppress the Windows console window when launched as a GUI app.
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod config;
+
 use custom2fa_core::account::{
-    validate_digits, validate_period, zeroize_accounts, Account, TotpAlgorithm,
+    label_for_secret, validate_digits, validate_period, zeroize_accounts, Account, TotpAlgorithm,
 };
 use custom2fa_core::otp_uri::{
     parse_otpauth_uri, parse_otpauth_uri_from_luma, parse_otpauth_uri_from_qr_image,
 };
-use custom2fa_core::storage::{export_backup, import_backup, load_accounts, save_accounts};
+use custom2fa_core::storage::{
+    change_passphrase, export_backup, import_backup, load_accounts, save_accounts,
+};
 use custom2fa_core::totp::{decode_secret, format_totp_code, generate_totp_for_account};
-use eframe::egui::{self, Color32, RichText, Stroke};
+use eframe::egui::{self, Color32, Key, Modifiers, RichText, Stroke};
 use keyring::Entry;
 use nokhwa::pixel_format::RgbFormat;
 use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType};
 use nokhwa::Camera;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use zeroize::Zeroize;
 
 // ── Theme constants ──────────────────────────────────────────────────────────
@@ -87,6 +91,7 @@ struct CardData {
     secs: u32,
     frac: f32,
     expanded: bool,
+    hidden: bool,
 }
 
 enum CardAction {
@@ -96,8 +101,12 @@ enum CardAction {
     Toggle(String),
 }
 
+const CLIPBOARD_TTL: Duration = Duration::from_secs(30);
+
 // ── App state ────────────────────────────────────────────────────────────────
 struct Custom2faApp {
+    cfg: config::UiConfig,
+
     // vault
     db_path: String,
     db_pass: String,
@@ -111,6 +120,7 @@ struct Custom2faApp {
     sel_cat: String, // "" = All, "__none__" = uncategorised
     sel_label: String,
     search: String,
+    search_focus: bool,
 
     // add-account form
     af_issuer: String,
@@ -139,6 +149,11 @@ struct Custom2faApp {
     // backup
     bk_path: String,
     bk_pass: String,
+    backup_prompt: bool,
+
+    // change passphrase
+    new_pass: String,
+    new_pass_confirm: String,
 
     // status bar
     status: String,
@@ -147,14 +162,30 @@ struct Custom2faApp {
     // confirm-delete
     del_label: Option<String>,
 
-    // which account cards are currently expanded
+    // duplicate-secret confirm
+    dup_pending: Option<Account>,
+
+    // which account cards are currently expanded / revealed
     expanded_labels: std::collections::HashSet<String>,
+    revealed_labels: std::collections::HashSet<String>,
+
+    last_input: Instant,
+    clipboard_clear_at: Option<Instant>,
+    clipboard_value: String,
 }
 
 impl Default for Custom2faApp {
     fn default() -> Self {
+        Self::from_config(config::UiConfig::default())
+    }
+}
+
+impl Custom2faApp {
+    fn from_config(cfg: config::UiConfig) -> Self {
+        let db_path = cfg.db_path.clone();
         Self {
-            db_path: "!2fa".into(),
+            cfg,
+            db_path,
             db_pass: String::new(),
             accounts_loaded: false,
             accounts: Vec::new(),
@@ -165,6 +196,7 @@ impl Default for Custom2faApp {
             sel_cat: String::new(),
             sel_label: String::new(),
             search: String::new(),
+            search_focus: false,
 
             af_issuer: String::new(),
             af_label: String::new(),
@@ -189,13 +221,152 @@ impl Default for Custom2faApp {
 
             bk_path: "backup-2fa.json".into(),
             bk_pass: String::new(),
+            backup_prompt: false,
+
+            new_pass: String::new(),
+            new_pass_confirm: String::new(),
 
             status: String::new(),
             is_err: false,
 
             del_label: None,
+            dup_pending: None,
 
             expanded_labels: std::collections::HashSet::new(),
+            revealed_labels: std::collections::HashSet::new(),
+
+            last_input: Instant::now(),
+            clipboard_clear_at: None,
+            clipboard_value: String::new(),
+        }
+    }
+
+    fn persist_cfg(&mut self) {
+        self.cfg.db_path = self.db_path.clone();
+        config::save(&self.cfg);
+    }
+
+    fn try_auto_unlock(&mut self) {
+        if !self.cfg.auto_unlock {
+            return;
+        }
+        if self.do_load_keychain().is_ok() && !self.db_pass.is_empty() && self.do_reload().is_ok() {
+            self.set_ok("Vault unlocked from keychain.");
+            self.panel = Panel::Accounts;
+        }
+    }
+
+    fn pick_file(filters: &[(&str, &[&str])]) -> Option<String> {
+        let mut dlg = rfd::FileDialog::new();
+        for (name, exts) in filters {
+            dlg = dlg.add_filter(*name, exts);
+        }
+        dlg.pick_file().map(|p| p.to_string_lossy().into_owned())
+    }
+
+    fn save_file(filters: &[(&str, &[&str])], filename: &str) -> Option<String> {
+        let mut dlg = rfd::FileDialog::new().set_file_name(filename);
+        for (name, exts) in filters {
+            dlg = dlg.add_filter(*name, exts);
+        }
+        dlg.save_file().map(|p| p.to_string_lossy().into_owned())
+    }
+
+    fn copy_code(&mut self, ctx: &egui::Context, label: &str, code: String) {
+        ctx.copy_text(code.clone());
+        self.clipboard_value = code;
+        self.clipboard_clear_at = Some(Instant::now() + CLIPBOARD_TTL);
+        self.revealed_labels.insert(label.to_string());
+        self.set_ok(format!(
+            "Code for \"{label}\" copied. Clipboard clears in 30s."
+        ));
+    }
+
+    fn maybe_clear_clipboard(&mut self) {
+        let Some(at) = self.clipboard_clear_at else {
+            return;
+        };
+        if Instant::now() < at {
+            return;
+        }
+        self.clipboard_clear_at = None;
+        if self.clipboard_value.is_empty() {
+            return;
+        }
+        if let Ok(mut cb) = arboard::Clipboard::new() {
+            if cb.get_text().ok().as_deref() == Some(self.clipboard_value.as_str()) {
+                let _ = cb.set_text(String::new());
+                self.set_ok("Clipboard cleared.");
+            }
+        }
+        self.clipboard_value.zeroize();
+    }
+
+    fn note_input(&mut self, ctx: &egui::Context) {
+        let interacted = ctx.input(|i| {
+            i.pointer.any_pressed()
+                || !i.keys_down.is_empty()
+                || i.raw_scroll_delta != egui::Vec2::ZERO
+        });
+        if interacted {
+            self.last_input = Instant::now();
+        }
+    }
+
+    fn maybe_auto_lock(&mut self) {
+        if !self.accounts_loaded {
+            return;
+        }
+        let secs = self.cfg.auto_lock_seconds;
+        if secs == 0 {
+            return;
+        }
+        if self.last_input.elapsed() >= Duration::from_secs(u64::from(secs)) {
+            self.lock_vault();
+            self.set_ok("Vault locked after idle timeout.");
+        }
+    }
+
+    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
+        let mut lock = false;
+        let mut add = false;
+        let mut focus_search = false;
+        ctx.input_mut(|i| {
+            if i.consume_key(Modifiers::COMMAND, Key::L) {
+                lock = true;
+            }
+            if i.consume_key(Modifiers::COMMAND, Key::N) {
+                add = true;
+            }
+            if i.consume_key(Modifiers::COMMAND, Key::F) {
+                focus_search = true;
+            }
+            if (self.editing.is_some()
+                || self.del_label.is_some()
+                || self.backup_prompt
+                || self.dup_pending.is_some())
+                && i.consume_key(Modifiers::NONE, Key::Escape)
+            {
+                if self.editing.is_some() {
+                    self.editing = None;
+                } else if self.del_label.is_some() {
+                    self.del_label = None;
+                } else if self.backup_prompt {
+                    self.backup_prompt = false;
+                } else if self.dup_pending.is_some() {
+                    self.dup_pending = None;
+                }
+            }
+        });
+        if lock && self.accounts_loaded {
+            self.lock_vault();
+            self.set_ok("Vault locked.");
+        }
+        if add {
+            self.panel = Panel::Add;
+        }
+        if focus_search {
+            self.search_focus = true;
         }
     }
 }
@@ -300,14 +471,11 @@ impl Custom2faApp {
             a.category
                 .to_lowercase()
                 .cmp(&b.category.to_lowercase())
-                .then(
-                    a.issuer
-                        .to_lowercase()
-                        .cmp(&b.issuer.to_lowercase()),
-                )
+                .then(a.issuer.to_lowercase().cmp(&b.issuer.to_lowercase()))
                 .then(a.label.to_lowercase().cmp(&b.label.to_lowercase()))
         });
         self.accounts_loaded = true;
+        self.persist_cfg();
         if !self.accounts.iter().any(|a| a.label == self.sel_label) {
             self.sel_label = self
                 .accounts
@@ -323,6 +491,24 @@ impl Custom2faApp {
     }
 
     fn push_imported(&mut self, account: Account) -> Result<(), String> {
+        if self.accounts.iter().any(|a| a.label == account.label) {
+            return Err("An account with this label already exists.".into());
+        }
+        if let Some(existing) = label_for_secret(&self.accounts, &account.secret) {
+            self.dup_pending = Some(account);
+            return Err(format!(
+                "This secret is already stored as \"{existing}\". Confirm to add anyway."
+            ));
+        }
+        self.accounts.push(account);
+        self.do_save()?;
+        self.do_reload()?;
+        self.panel = Panel::Accounts;
+        Ok(())
+    }
+
+    fn commit_dup_pending(&mut self) -> Result<(), String> {
+        let account = self.dup_pending.take().ok_or("No pending account.")?;
         if self.accounts.iter().any(|a| a.label == account.label) {
             return Err("An account with this label already exists.".into());
         }
@@ -353,6 +539,12 @@ impl Custom2faApp {
             digits: self.af_digits,
             category: self.af_cat.clone(),
         };
+        if let Some(existing) = label_for_secret(&self.accounts, &account.secret) {
+            self.dup_pending = Some(account);
+            return Err(format!(
+                "This secret is already stored as \"{existing}\". Confirm to add anyway."
+            ));
+        }
         self.accounts.push(account);
         self.do_save()?;
         self.do_reload()?;
@@ -385,8 +577,7 @@ impl Custom2faApp {
         if !path.exists() {
             return Err(format!("File not found: {cleaned}"));
         }
-        let account =
-            parse_otpauth_uri_from_qr_image(&path).map_err(|e| e.to_string())?;
+        let account = parse_otpauth_uri_from_qr_image(&path).map_err(|e| e.to_string())?;
         self.do_reload()?;
         self.if_qr.clear();
         self.push_imported(account)
@@ -397,8 +588,7 @@ impl Custom2faApp {
             .if_cam
             .parse::<u32>()
             .map_err(|_| "Camera index must be a number (e.g. 0).".to_string())?;
-        let fmt =
-            RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
+        let fmt = RequestedFormat::new::<RgbFormat>(RequestedFormatType::AbsoluteHighestResolution);
         let mut cam = Camera::new(CameraIndex::Index(idx), fmt).map_err(|e| e.to_string())?;
         cam.open_stream().map_err(|e| e.to_string())?;
         let frame = cam.frame().map_err(|e| e.to_string())?;
@@ -484,18 +674,51 @@ impl Custom2faApp {
         .map_err(|e| e.to_string())
     }
 
-    fn do_import_backup(&mut self) -> Result<(), String> {
+    fn do_import_backup(&mut self, replace: bool) -> Result<String, String> {
         if self.bk_pass.is_empty() {
             return Err("Backup passphrase is required.".into());
         }
-        import_backup(
+        let result = import_backup(
             &PathBuf::from(&self.bk_path),
             &self.db_pb(),
             &self.bk_pass,
             &self.db_pass,
+            replace,
         )
         .map_err(|e| e.to_string())?;
-        self.do_reload()
+        self.do_reload()?;
+        if result.replaced {
+            Ok(format!("Vault replaced with {} account(s).", result.added))
+        } else {
+            let mut msg = format!(
+                "Merged backup: {} added, {} skipped.",
+                result.added,
+                result.skipped_labels.len()
+            );
+            if !result.duplicate_secrets.is_empty() {
+                msg.push_str(" Some added accounts share a secret with an existing one.");
+            }
+            Ok(msg)
+        }
+    }
+
+    fn do_change_passphrase(&mut self) -> Result<(), String> {
+        if !self.accounts_loaded {
+            return Err("Load the vault before changing the passphrase.".into());
+        }
+        if self.new_pass.is_empty() {
+            return Err("New passphrase cannot be empty.".into());
+        }
+        if self.new_pass != self.new_pass_confirm {
+            return Err("New passphrase and confirmation do not match.".into());
+        }
+        change_passphrase(&self.db_pb(), &self.db_pass, &self.new_pass)
+            .map_err(|e| e.to_string())?;
+        self.db_pass = self.new_pass.clone();
+        self.new_pass.zeroize();
+        self.new_pass_confirm.zeroize();
+        let _ = self.do_save_keychain();
+        Ok(())
     }
 
     fn keychain_entry(&self) -> Result<Entry, String> {
@@ -555,6 +778,9 @@ impl Custom2faApp {
         self.bk_pass.zeroize();
         self.af_secret.zeroize();
         self.ef_secret.zeroize();
+        self.new_pass.zeroize();
+        self.new_pass_confirm.zeroize();
+        self.clipboard_value.zeroize();
     }
 
     fn lock_vault(&mut self) {
@@ -564,12 +790,22 @@ impl Custom2faApp {
         self.editing = None;
         self.del_label = None;
         self.expanded_labels.clear();
+        self.revealed_labels.clear();
+        self.dup_pending = None;
+        self.backup_prompt = false;
+        self.new_pass.zeroize();
+        self.new_pass_confirm.zeroize();
     }
 
     // ── Sidebar ──────────────────────────────────────────────────────────────
     fn show_sidebar(&mut self, ui: &mut egui::Ui) {
         ui.add_space(12.0);
-        ui.label(RichText::new("Custom2FA").size(22.0).strong().color(C_ACCENT));
+        ui.label(
+            RichText::new("Custom2FA")
+                .size(22.0)
+                .strong()
+                .color(C_ACCENT),
+        );
         ui.label(RichText::new("Offline TOTP Manager").small().color(C_MUTED));
         ui.add_space(6.0);
 
@@ -586,11 +822,16 @@ impl Custom2faApp {
         ui.separator();
 
         // Search
-        ui.add(
+        let search = ui.add(
             egui::TextEdit::singleline(&mut self.search)
-                .hint_text("Search accounts…")
-                .desired_width(f32::INFINITY),
+                .hint_text("Search accounts…  Ctrl+F")
+                .desired_width(f32::INFINITY)
+                .id(egui::Id::new("search_box")),
         );
+        if self.search_focus {
+            search.request_focus();
+            self.search_focus = false;
+        }
 
         ui.add_space(6.0);
 
@@ -598,7 +839,11 @@ impl Custom2faApp {
         if self.accounts_loaded && !self.accounts.is_empty() {
             let total = self.accounts.len();
             let cats = self.categories();
-            let none_count = self.accounts.iter().filter(|a| a.category.is_empty()).count();
+            let none_count = self
+                .accounts
+                .iter()
+                .filter(|a| a.category.is_empty())
+                .count();
 
             if ui
                 .selectable_label(
@@ -615,10 +860,7 @@ impl Custom2faApp {
                 let n = self.accounts.iter().filter(|a| &a.category == cat).count();
                 let sel = self.sel_cat == *cat;
                 if ui
-                    .selectable_label(
-                        sel,
-                        RichText::new(format!("  {cat}  ({n})")).color(C_TEXT),
-                    )
+                    .selectable_label(sel, RichText::new(format!("  {cat}  ({n})")).color(C_TEXT))
                     .clicked()
                 {
                     self.sel_cat = cat.clone();
@@ -680,16 +922,9 @@ impl Custom2faApp {
         if !self.accounts_loaded {
             ui.vertical_centered(|ui| {
                 ui.add_space(80.0);
-                ui.label(
-                    RichText::new("Vault is locked")
-                        .size(18.0)
-                        .color(C_MUTED),
-                );
+                ui.label(RichText::new("Vault is locked").size(18.0).color(C_MUTED));
                 ui.add_space(6.0);
-                ui.label(
-                    RichText::new("Open Settings to load your database.")
-                        .color(C_MUTED),
-                );
+                ui.label(RichText::new("Open Settings to load your database.").color(C_MUTED));
                 ui.add_space(16.0);
                 if ui.button("Open Settings").clicked() {
                     self.panel = Panel::Settings;
@@ -729,6 +964,7 @@ impl Custom2faApp {
                     secs,
                     frac,
                     expanded: self.expanded_labels.contains(lbl),
+                    hidden: self.cfg.hide_codes && !self.revealed_labels.contains(lbl),
                 })
             })
             .collect();
@@ -750,8 +986,7 @@ impl Custom2faApp {
             Some(CardAction::Edit(lbl)) => self.begin_edit(&lbl),
             Some(CardAction::Delete(lbl)) => self.del_label = Some(lbl),
             Some(CardAction::Copied { label, code }) => {
-                ctx.copy_text(code);
-                self.set_ok(format!("Code for \"{label}\" copied to clipboard."));
+                self.copy_code(ctx, &label, code);
             }
             Some(CardAction::Toggle(lbl)) => {
                 if self.expanded_labels.contains(&lbl) {
@@ -767,7 +1002,12 @@ impl Custom2faApp {
     // ── Add / Import panel ───────────────────────────────────────────────────
     fn show_add_panel(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
-        ui.label(RichText::new("Add / Import Account").size(18.0).strong().color(C_ACCENT));
+        ui.label(
+            RichText::new("Add / Import Account")
+                .size(18.0)
+                .strong()
+                .color(C_ACCENT),
+        );
         ui.add_space(8.0);
 
         // Tab bar
@@ -797,7 +1037,7 @@ impl Custom2faApp {
             AddTab::Manual => {
                 form_row(ui, "Issuer", &mut self.af_issuer, false);
                 form_row(ui, "Label", &mut self.af_label, false);
-                form_row(ui, "Base32 secret", &mut self.af_secret, false);
+                form_row(ui, "Base32 secret", &mut self.af_secret, true);
                 form_row(ui, "Category (optional)", &mut self.af_cat, false);
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
@@ -837,22 +1077,29 @@ impl Custom2faApp {
                 );
                 ui.add_space(8.0);
                 if ui
-                    .add(
-                        egui::Button::new("Import URI").min_size([200.0, 32.0].into()),
-                    )
+                    .add(egui::Button::new("Import URI").min_size([200.0, 32.0].into()))
                     .clicked()
                 {
                     self.exec("Account imported from URI.", |s| s.do_import_uri());
                 }
             }
             AddTab::QrImage => {
-                ui.label(RichText::new("Full path to a PNG or JPG QR code image:").color(C_MUTED));
+                ui.label(RichText::new("PNG or JPG QR code image:").color(C_MUTED));
                 ui.add_space(4.0);
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.if_qr)
-                        .desired_width(f32::INFINITY)
-                        .hint_text("C:\\Users\\you\\qr.png  or  /home/you/qr.png"),
-                );
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.if_qr)
+                            .desired_width(ui.available_width() - 90.0)
+                            .hint_text("Select a QR image…"),
+                    );
+                    if ui.button("Browse…").clicked() {
+                        if let Some(p) =
+                            Self::pick_file(&[("Images", &["png", "jpg", "jpeg", "webp"])])
+                        {
+                            self.if_qr = p;
+                        }
+                    }
+                });
                 ui.label(
                     RichText::new("Surrounding quotes are stripped automatically.")
                         .small()
@@ -880,9 +1127,7 @@ impl Custom2faApp {
                 });
                 ui.add_space(8.0);
                 if ui
-                    .add(
-                        egui::Button::new("Scan QR From Camera").min_size([200.0, 32.0].into()),
-                    )
+                    .add(egui::Button::new("Scan QR From Camera").min_size([200.0, 32.0].into()))
                     .clicked()
                 {
                     self.exec("Account imported from camera.", |s| s.do_import_camera());
@@ -894,15 +1139,27 @@ impl Custom2faApp {
     // ── Backup panel ─────────────────────────────────────────────────────────
     fn show_backup_panel(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
-        ui.label(RichText::new("Backup / Restore").size(18.0).strong().color(C_ACCENT));
+        ui.label(
+            RichText::new("Backup / Restore")
+                .size(18.0)
+                .strong()
+                .color(C_ACCENT),
+        );
         ui.add_space(12.0);
 
         ui.label(RichText::new("Backup file path:").color(C_MUTED).small());
-        ui.add(
-            egui::TextEdit::singleline(&mut self.bk_path)
-                .desired_width(f32::INFINITY)
-                .hint_text("backup-2fa.json"),
-        );
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.bk_path)
+                    .desired_width(ui.available_width() - 90.0)
+                    .hint_text("backup-2fa.json"),
+            );
+            if ui.button("Browse…").clicked() {
+                if let Some(p) = Self::save_file(&[("Backup JSON", &["json"])], "backup-2fa.json") {
+                    self.bk_path = p;
+                }
+            }
+        });
         ui.add_space(8.0);
         ui.label(
             RichText::new("Backup passphrase (separate from your vault passphrase):")
@@ -929,7 +1186,7 @@ impl Custom2faApp {
                 .add(egui::Button::new("Import Backup").min_size([170.0, 32.0].into()))
                 .clicked()
             {
-                self.exec("Backup imported and re-encrypted.", |s| s.do_import_backup());
+                self.backup_prompt = true;
             }
         });
 
@@ -946,15 +1203,28 @@ impl Custom2faApp {
     // ── Settings panel ───────────────────────────────────────────────────────
     fn show_settings_panel(&mut self, ui: &mut egui::Ui) {
         ui.add_space(8.0);
-        ui.label(RichText::new("Settings").size(18.0).strong().color(C_ACCENT));
+        ui.label(
+            RichText::new("Settings")
+                .size(18.0)
+                .strong()
+                .color(C_ACCENT),
+        );
         ui.add_space(14.0);
 
         ui.label(RichText::new("Database file path:").color(C_MUTED).small());
-        ui.add(
-            egui::TextEdit::singleline(&mut self.db_path)
-                .desired_width(f32::INFINITY)
-                .hint_text("!2fa"),
-        );
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.db_path)
+                    .desired_width(ui.available_width() - 90.0)
+                    .hint_text("accounts.c2fa"),
+            );
+            if ui.button("Browse…").clicked() {
+                if let Some(p) = Self::save_file(&[("Vault", &["c2fa"])], "accounts.c2fa") {
+                    self.db_path = p;
+                    self.persist_cfg();
+                }
+            }
+        });
         ui.add_space(8.0);
 
         ui.label(RichText::new("Database passphrase:").color(C_MUTED).small());
@@ -966,8 +1236,11 @@ impl Custom2faApp {
         );
         ui.add_space(12.0);
 
-        // OS keychain
-        ui.label(RichText::new("OS Keychain (optional):").color(C_MUTED).small());
+        ui.label(
+            RichText::new("OS Keychain (optional):")
+                .color(C_MUTED)
+                .small(),
+        );
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             if ui.button("Save to keychain").clicked() {
@@ -982,6 +1255,44 @@ impl Custom2faApp {
                 self.exec("Keychain entry cleared.", |s| s.do_clear_keychain());
             }
         });
+
+        ui.add_space(14.0);
+        ui.separator();
+        ui.add_space(8.0);
+        ui.label(RichText::new("Privacy").strong().color(C_ACCENT));
+        ui.add_space(6.0);
+        if ui
+            .checkbox(&mut self.cfg.hide_codes, "Hide codes until clicked")
+            .changed()
+        {
+            self.persist_cfg();
+            if !self.cfg.hide_codes {
+                self.revealed_labels.clear();
+            }
+        }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Idle auto-lock").color(C_MUTED).small());
+            let mut secs = self.cfg.auto_lock_seconds;
+            egui::ComboBox::from_id_salt("auto_lock")
+                .selected_text(auto_lock_label(secs))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut secs, 0, "Off");
+                    ui.selectable_value(&mut secs, 60, "1 minute");
+                    ui.selectable_value(&mut secs, 300, "5 minutes");
+                    ui.selectable_value(&mut secs, 900, "15 minutes");
+                });
+            if secs != self.cfg.auto_lock_seconds {
+                self.cfg.auto_lock_seconds = secs;
+                self.persist_cfg();
+            }
+        });
+        if ui
+            .checkbox(&mut self.cfg.auto_unlock, "Unlock from keychain on launch")
+            .changed()
+        {
+            self.persist_cfg();
+        }
 
         ui.add_space(14.0);
         ui.separator();
@@ -1012,15 +1323,40 @@ impl Custom2faApp {
                 self.lock_vault();
                 self.set_ok("Vault locked.");
             }
+
+            ui.add_space(16.0);
+            ui.separator();
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("Change vault passphrase")
+                    .strong()
+                    .color(C_ACCENT),
+            );
+            ui.add_space(6.0);
+            form_row(ui, "New passphrase", &mut self.new_pass, true);
+            form_row(
+                ui,
+                "Confirm new passphrase",
+                &mut self.new_pass_confirm,
+                true,
+            );
+            if ui.button("Change passphrase").clicked() {
+                self.exec("Vault passphrase changed.", |s| s.do_change_passphrase());
+            }
         }
 
         ui.add_space(20.0);
         ui.separator();
         ui.add_space(8.0);
+        ui.label(RichText::new("Shortcuts").strong().color(C_ACCENT));
+        ui.add_space(4.0);
+        ui.label("Ctrl+F  search   ·   Ctrl+N  add   ·   Ctrl+L  lock   ·   Esc  close dialog");
+        ui.add_space(8.0);
         ui.label(RichText::new("Notes").strong().color(C_ACCENT));
         ui.add_space(4.0);
         ui.label("The passphrase is only held in memory — never written to disk in plaintext.");
         ui.label("The OS keychain entry is stored per-user and does not sync across machines.");
+        ui.label("Copied codes are cleared from the clipboard after 30 seconds.");
         ui.label("To use an existing vault from another machine, copy the .c2fa file here.");
     }
 
@@ -1050,6 +1386,7 @@ impl Custom2faApp {
                 );
                 ui.add(
                     egui::TextEdit::singleline(&mut self.ef_secret)
+                        .password(true)
                         .hint_text("Leave blank to keep current secret")
                         .desired_width(f32::INFINITY),
                 );
@@ -1116,11 +1453,7 @@ impl Custom2faApp {
                 ui.add_space(6.0);
                 ui.label(RichText::new(format!("\"{}\"", label)).color(C_TEXT));
                 ui.add_space(4.0);
-                ui.label(
-                    RichText::new("This cannot be undone.")
-                        .small()
-                        .color(C_ERR),
-                );
+                ui.label(RichText::new("This cannot be undone.").small().color(C_ERR));
                 ui.add_space(14.0);
                 ui.horizontal(|ui| {
                     if ui
@@ -1149,6 +1482,97 @@ impl Custom2faApp {
         }
     }
 
+    fn show_backup_prompt(&mut self, ctx: &egui::Context) {
+        if !self.backup_prompt {
+            return;
+        }
+        let mut merge = false;
+        let mut replace = false;
+        let mut cancel = false;
+        egui::Window::new("Import Backup")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_min_width(420.0);
+                ui.label(RichText::new("How should this backup be applied?").strong());
+                ui.add_space(6.0);
+                ui.label("Merge keeps existing accounts and skips duplicate labels.");
+                ui.label(
+                    RichText::new("Replace overwrites the entire vault.")
+                        .color(C_ERR)
+                        .small(),
+                );
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(egui::Button::new("Merge").min_size([110.0, 30.0].into()))
+                        .clicked()
+                    {
+                        merge = true;
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new("Replace vault").color(C_ERR))
+                                .min_size([130.0, 30.0].into()),
+                        )
+                        .clicked()
+                    {
+                        replace = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if merge || replace {
+            self.backup_prompt = false;
+            match self.do_import_backup(replace) {
+                Ok(msg) => self.set_ok(msg),
+                Err(e) => self.set_err(e),
+            }
+        } else if cancel {
+            self.backup_prompt = false;
+        }
+    }
+
+    fn show_dup_confirm(&mut self, ctx: &egui::Context) {
+        if self.dup_pending.is_none() {
+            return;
+        }
+        let label = self
+            .dup_pending
+            .as_ref()
+            .map(|a| a.label.clone())
+            .unwrap_or_default();
+        let mut add = false;
+        let mut cancel = false;
+        egui::Window::new("Duplicate Secret")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_min_width(380.0);
+                ui.label("This secret is already stored on another account.");
+                ui.add_space(4.0);
+                ui.label(RichText::new(format!("Add \"{label}\" anyway?")).color(C_TEXT));
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Add anyway").clicked() {
+                        add = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if add {
+            self.exec("Account added.", |s| s.commit_dup_pending());
+        } else if cancel {
+            self.dup_pending = None;
+        }
+    }
+
     // ── Status bar ───────────────────────────────────────────────────────────
     fn show_status_bar(&self, ui: &mut egui::Ui) {
         if self.status.is_empty() {
@@ -1160,7 +1584,11 @@ impl Custom2faApp {
         } else {
             ("✔  ", C_OK)
         };
-        ui.label(RichText::new(format!("{icon}{}", self.status)).small().color(color));
+        ui.label(
+            RichText::new(format!("{icon}{}", self.status))
+                .small()
+                .color(color),
+        );
     }
 }
 
@@ -1254,10 +1682,19 @@ fn show_card(ui: &mut egui::Ui, card: &CardData, pending: &mut Option<CardAction
 
                 // 4. Code — min_size guarantees the text is never squeezed
                 //    to sub-character width by the surrounding RTL layout.
+                let shown = if card.hidden {
+                    match card.digits {
+                        6 => "••• •••".to_string(),
+                        8 => "•••• ••••".to_string(),
+                        n => "•".repeat(n as usize),
+                    }
+                } else {
+                    card.code.clone()
+                };
                 if ui
                     .add(
                         egui::Button::new(
-                            RichText::new(&card.code)
+                            RichText::new(&shown)
                                 .monospace()
                                 .size(22.0)
                                 .strong()
@@ -1266,7 +1703,11 @@ fn show_card(ui: &mut egui::Ui, card: &CardData, pending: &mut Option<CardAction
                         .frame(false)
                         .min_size([130.0, 34.0].into()),
                     )
-                    .on_hover_text("Click to copy")
+                    .on_hover_text(if card.hidden {
+                        "Click to reveal and copy"
+                    } else {
+                        "Click to copy"
+                    })
                     .clicked()
                 {
                     *pending = Some(CardAction::Copied {
@@ -1355,23 +1796,43 @@ fn algo_combo(ui: &mut egui::Ui, id: &str, algo: &mut TotpAlgorithm) {
 }
 
 fn period_combo(ui: &mut egui::Ui, id: &str, period: &mut u32) {
+    let mut options = vec![15u32, 30, 60, 90];
+    if !options.contains(period) {
+        options.push(*period);
+        options.sort_unstable();
+    }
     egui::ComboBox::from_id_salt(id)
         .selected_text(format!("{period} seconds"))
         .show_ui(ui, |ui| {
-            for &p in &[15u32, 30, 60, 90] {
+            for p in options {
                 ui.selectable_value(period, p, format!("{p} seconds"));
             }
         });
 }
 
 fn digits_combo(ui: &mut egui::Ui, id: &str, digits: &mut u8) {
+    let mut options = vec![6u8, 7, 8];
+    if !options.contains(digits) {
+        options.push(*digits);
+        options.sort_unstable();
+    }
     egui::ComboBox::from_id_salt(id)
         .selected_text(digits.to_string())
         .show_ui(ui, |ui| {
-            for &d in &[6u8, 7, 8] {
+            for d in options {
                 ui.selectable_value(digits, d, format!("{d} digits"));
             }
         });
+}
+
+fn auto_lock_label(secs: u32) -> &'static str {
+    match secs {
+        0 => "Off",
+        60 => "1 minute",
+        300 => "5 minutes",
+        900 => "15 minutes",
+        _ => "Custom",
+    }
 }
 
 // ── eframe::App ───────────────────────────────────────────────────────────────
@@ -1383,22 +1844,40 @@ impl Drop for Custom2faApp {
 
 impl eframe::App for Custom2faApp {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.persist_cfg();
         self.zeroize_sensitive_memory();
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Refresh codes at ~4 fps (smooth countdown)
         ctx.request_repaint_after(Duration::from_millis(250));
+        self.note_input(ctx);
+        self.handle_shortcuts(ctx);
+        self.maybe_auto_lock();
+        self.maybe_clear_clipboard();
+
+        let size = ctx.input(|i| i.content_rect().size());
+        if (size.x - self.cfg.window_width).abs() > 1.0
+            || (size.y - self.cfg.window_height).abs() > 1.0
+        {
+            self.cfg.window_width = size.x;
+            self.cfg.window_height = size.y;
+        }
+
         if self.accounts_loaded {
             self.refresh_live_codes();
         }
 
-        // Modal windows (drawn before panels so they appear on top)
         if self.editing.is_some() {
             self.show_edit_window(ctx);
         }
         if self.del_label.is_some() {
             self.show_delete_confirm(ctx);
+        }
+        if self.backup_prompt {
+            self.show_backup_prompt(ctx);
+        }
+        if self.dup_pending.is_some() {
+            self.show_dup_confirm(ctx);
         }
 
         // Status bar (bottom)
@@ -1420,13 +1899,11 @@ impl eframe::App for Custom2faApp {
             });
 
         // Main content
-        egui::CentralPanel::default().show(ctx, |ui| {
-            match self.panel {
-                Panel::Accounts => self.show_accounts_panel(ui, ctx),
-                Panel::Add => self.show_add_panel(ui),
-                Panel::Backup => self.show_backup_panel(ui),
-                Panel::Settings => self.show_settings_panel(ui),
-            }
+        egui::CentralPanel::default().show(ctx, |ui| match self.panel {
+            Panel::Accounts => self.show_accounts_panel(ui, ctx),
+            Panel::Add => self.show_add_panel(ui),
+            Panel::Backup => self.show_backup_panel(ui),
+            Panel::Settings => self.show_settings_panel(ui),
         });
     }
 }
@@ -1471,7 +1948,7 @@ fn app_icon() -> egui::IconData {
                 // soft anti-aliased edge
                 if d <= r + 1.0 {
                     let t = (r + 1.0 - d).clamp(0.0, 1.0);
-                    rgba[i]     = (26.0 * t) as u8;
+                    rgba[i] = (26.0 * t) as u8;
                     rgba[i + 1] = (26.0 * t) as u8;
                     rgba[i + 2] = (38.0 * t) as u8;
                     rgba[i + 3] = (255.0 * t) as u8;
@@ -1481,13 +1958,13 @@ fn app_icon() -> egui::IconData {
 
             if d >= r - ring_w {
                 // accent-blue ring  (#7AA2F7)
-                rgba[i]     = 122;
+                rgba[i] = 122;
                 rgba[i + 1] = 162;
                 rgba[i + 2] = 247;
                 rgba[i + 3] = 255;
             } else {
                 // dark inner background (#1A1A26)
-                rgba[i]     = 26;
+                rgba[i] = 26;
                 rgba[i + 1] = 26;
                 rgba[i + 2] = 38;
                 rgba[i + 3] = 255;
@@ -1495,13 +1972,11 @@ fn app_icon() -> egui::IconData {
                 // draw "2" glyph (lighter accent #C0CAF5)
                 let gxi = ((px - gx0) / scale) as isize;
                 let gyi = ((py - gy0) / scale) as isize;
-                if gxi >= 0
-                    && gxi < 5
-                    && gyi >= 0
-                    && gyi < 7
+                if (0..5).contains(&gxi)
+                    && (0..7).contains(&gyi)
                     && glyph[gyi as usize][gxi as usize] == 1
                 {
-                    rgba[i]     = 192;
+                    rgba[i] = 192;
                     rgba[i + 1] = 202;
                     rgba[i + 2] = 245;
                     rgba[i + 3] = 255;
@@ -1510,15 +1985,20 @@ fn app_icon() -> egui::IconData {
         }
     }
 
-    egui::IconData { rgba, width: S, height: S }
+    egui::IconData {
+        rgba,
+        width: S,
+        height: S,
+    }
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 fn main() -> eframe::Result<()> {
+    let cfg = config::load();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Custom2FA")
-            .with_inner_size([980.0, 700.0])
+            .with_inner_size([cfg.window_width, cfg.window_height])
             .with_min_inner_size([720.0, 520.0])
             .with_icon(std::sync::Arc::new(app_icon())),
         ..Default::default()
@@ -1526,9 +2006,11 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Custom2FA",
         options,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             cc.egui_ctx.set_visuals(build_visuals());
-            Ok(Box::<Custom2faApp>::default())
+            let mut app = Custom2faApp::from_config(cfg);
+            app.try_auto_unlock();
+            Ok(Box::new(app))
         }),
     )
 }

@@ -10,14 +10,16 @@ From `authenticator/`:
 
 ## What it supports
 
-- Load encrypted account DB (`accounts.c2fa` by default)
-- Add account from manual Base32 secret
+- Load encrypted account DB (path remembered across launches)
+- Add account from manual Base32 secret (masked; spaces/hyphens ignored)
 - Import from `otpauth://` URI
-- Import from QR image file
+- Import from QR image file (Browse…)
 - Import from camera QR snapshot (single-frame scan)
-- Generate current 6-digit TOTP code
-- Search, edit, and delete accounts
-- Save/load DB passphrase to OS keychain
-- Export/import encrypted backups
+- Live TOTP cards with countdown; click to copy (clipboard clears after 30s)
+- Search, categories, edit, and delete
+- Hide codes until clicked; idle auto-lock; Ctrl+F / Ctrl+N / Ctrl+L
+- Change vault passphrase without re-importing
+- Save/load DB passphrase to OS keychain; optional auto-unlock
+- Export/import encrypted backups (merge or replace)
 
 Full usage, paths, and troubleshooting: [`../docs/USER_GUIDE.md`](../docs/USER_GUIDE.md).

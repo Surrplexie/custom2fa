@@ -104,7 +104,7 @@ pub fn parse_otpauth_uri_from_luma(image: GrayImage) -> Result<Account, AuthErro
     let mut prepared = PreparedImage::prepare(image);
     let grids = prepared.detect_grids();
 
-    for grid in grids {
+    if let Some(grid) = grids.into_iter().next() {
         let (_, content) = grid.decode().map_err(|_| AuthError::QrDecodeError)?;
         return parse_otpauth_uri(&content);
     }
@@ -136,6 +136,13 @@ mod tests {
         assert_eq!(account.algorithm, TotpAlgorithm::Sha256);
         assert_eq!(account.period_seconds, 60);
         assert_eq!(account.digits, 8);
+    }
+
+    #[test]
+    fn parses_secret_with_spaces() {
+        let uri = "otpauth://totp/Example:alice@example.com?secret=JBSW%20Y3DP%20EHPK%203PXP&issuer=Example";
+        let account = parse_otpauth_uri(uri).expect("spaced secret should parse");
+        assert!(!account.secret.is_empty());
     }
 
     #[test]

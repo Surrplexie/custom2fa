@@ -32,6 +32,12 @@ pub enum AuthError {
     #[error("Invalid TOTP parameters (period, digits, or algorithm)")]
     InvalidTotpParameters,
 
+    #[error("An account with this label already exists")]
+    DuplicateLabel,
+
+    #[error("Account not found")]
+    AccountNotFound,
+
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
