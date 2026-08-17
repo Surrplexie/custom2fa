@@ -722,10 +722,28 @@ impl Custom2faApp {
     }
 
     fn keychain_entry(&self) -> Result<Entry, String> {
-        if self.db_path.trim().is_empty() {
+        self.keychain_entry_for(&self.db_path)
+    }
+
+    fn keychain_entry_for(&self, key: &str) -> Result<Entry, String> {
+        if key.trim().is_empty() {
             return Err("Database path is required.".into());
         }
-        Entry::new("custom2fa.desktop", &self.db_path).map_err(|e| e.to_string())
+        Entry::new("custom2fa.desktop", key).map_err(|e| e.to_string())
+    }
+
+    fn keychain_lookup_keys(&self) -> Vec<String> {
+        let mut keys = Vec::new();
+        let push = |keys: &mut Vec<String>, k: &str| {
+            let k = k.trim();
+            if !k.is_empty() && !keys.iter().any(|x| x == k) {
+                keys.push(k.to_string());
+            }
+        };
+        push(&mut keys, &self.db_path);
+        push(&mut keys, "!2fa");
+        push(&mut keys, r"E:\!apps\!2fa");
+        keys
     }
 
     fn do_save_keychain(&mut self) -> Result<(), String> {
@@ -738,11 +756,20 @@ impl Custom2faApp {
     }
 
     fn do_load_keychain(&mut self) -> Result<(), String> {
-        self.db_pass = self
-            .keychain_entry()?
-            .get_password()
-            .map_err(|e| e.to_string())?;
-        Ok(())
+        let mut last_err = String::from("No keychain entry found.");
+        for key in self.keychain_lookup_keys() {
+            match self.keychain_entry_for(&key) {
+                Ok(entry) => match entry.get_password() {
+                    Ok(pass) => {
+                        self.db_pass = pass;
+                        return Ok(());
+                    }
+                    Err(e) => last_err = e.to_string(),
+                },
+                Err(e) => last_err = e,
+            }
+        }
+        Err(last_err)
     }
 
     fn do_clear_keychain(&mut self) -> Result<(), String> {
@@ -1216,10 +1243,10 @@ impl Custom2faApp {
             ui.add(
                 egui::TextEdit::singleline(&mut self.db_path)
                     .desired_width(ui.available_width() - 90.0)
-                    .hint_text("accounts.c2fa"),
+                    .hint_text(r"E:\!apps\!2fa"),
             );
             if ui.button("Browse…").clicked() {
-                if let Some(p) = Self::save_file(&[("Vault", &["c2fa"])], "accounts.c2fa") {
+                if let Some(p) = Self::pick_file(&[("Vault", &["c2fa"]), ("All files", &["*"])]) {
                     self.db_path = p;
                     self.persist_cfg();
                 }
@@ -2009,6 +2036,7 @@ fn main() -> eframe::Result<()> {
         Box::new(move |cc| {
             cc.egui_ctx.set_visuals(build_visuals());
             let mut app = Custom2faApp::from_config(cfg);
+            app.persist_cfg();
             app.try_auto_unlock();
             Ok(Box::new(app))
         }),

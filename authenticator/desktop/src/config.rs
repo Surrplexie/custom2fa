@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const APP_DIR: &str = "custom2fa";
 
@@ -72,18 +72,53 @@ fn data_dir() -> PathBuf {
 
 pub fn load() -> UiConfig {
     let path = config_path();
-    let Ok(bytes) = fs::read(&path) else {
-        return UiConfig::default();
-    };
-    match serde_json::from_slice::<UiConfig>(&bytes) {
-        Ok(mut cfg) => {
-            if cfg.db_path.trim().is_empty() || cfg.db_path.trim() == "!2fa" {
-                cfg.db_path = default_vault_path();
-            }
-            cfg
-        }
+    let mut cfg = match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice::<UiConfig>(&bytes).unwrap_or_default(),
         Err(_) => UiConfig::default(),
+    };
+    cfg.db_path = resolve_vault_path(&cfg.db_path);
+    cfg
+}
+
+/// Prefer an existing vault over a brand-new default path.
+/// The pre-0.3 GUI stored a relative `!2fa` file (often next to the exe).
+pub fn resolve_vault_path(configured: &str) -> String {
+    let configured = configured.trim();
+    if !configured.is_empty() && Path::new(configured).is_file() {
+        return configured.to_string();
     }
+
+    for candidate in existing_vault_candidates() {
+        if candidate.is_file() {
+            return candidate.to_string_lossy().into_owned();
+        }
+    }
+
+    if !configured.is_empty() {
+        return configured.to_string();
+    }
+    default_vault_path()
+}
+
+fn existing_vault_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let names = ["!2fa", "accounts.c2fa"];
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for name in names {
+                out.push(dir.join(name));
+            }
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        for name in names {
+            out.push(cwd.join(name));
+        }
+    }
+    out.push(PathBuf::from(r"E:\!apps\!2fa"));
+    out.push(PathBuf::from(default_vault_path()));
+    out
 }
 
 pub fn save(cfg: &UiConfig) {
